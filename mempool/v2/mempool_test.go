@@ -218,10 +218,20 @@ func TestTxMempool_Eviction(t *testing.T) {
 		return ok
 	}
 
+	txEvicted := func(spec string) bool {
+		txmp.Lock()
+		defer txmp.Unlock()
+		_, ok := txmp.evictedTxs[types.Tx(spec).Key()]
+		return ok
+	}
+
 	// A transaction bigger than the mempool should be rejected even when there
 	// are slots available.
-	mustCheckTx(t, txmp, "big=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef=1")
+	err := txmp.CheckTx(types.Tx("big=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef=1"), nil, mempool.TxInfo{})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "mempool is full")
 	require.Equal(t, 0, txmp.Size())
+	require.Len(t, txmp.evictedTxs, 1)
 
 	// Nearly-fill the mempool with a low-priority transaction, to show that it
 	// is evicted even when slots are available for a higher-priority tx.
@@ -236,7 +246,8 @@ func TestTxMempool_Eviction(t *testing.T) {
 	mustCheckTx(t, txmp, "key1=0000=25")
 	require.True(t, txExists("key1=0000=25"))
 	require.False(t, txExists(bigTx))
-	require.False(t, txmp.cache.Has([]byte(bigTx)))
+	require.True(t, txEvicted(bigTx))
+	require.Len(t, txmp.evictedTxs, 2)
 	require.Equal(t, int64(len("key1=0000=25")), txmp.SizeBytes())
 
 	// Now fill up the rest of the slots with other transactions.
@@ -246,8 +257,12 @@ func TestTxMempool_Eviction(t *testing.T) {
 	mustCheckTx(t, txmp, "key5=0004=3")
 
 	// A new transaction with low priority should be discarded.
-	mustCheckTx(t, txmp, "key6=0005=1")
+	err = txmp.CheckTx(types.Tx("key6=0005=1"), nil, mempool.TxInfo{})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "mempool is full")
 	require.False(t, txExists("key6=0005=1"))
+	// transactions instantly evicted should still be cached
+	require.True(t, txEvicted("key6=0005=1"))
 
 	// A new transaction with higher priority should evict key5, which is the
 	// newest of the two transactions with lowest priority.
@@ -433,28 +448,6 @@ func TestTxMempool_CheckTxSamePeer(t *testing.T) {
 	require.Error(t, txmp.CheckTx(tx, nil, mempool.TxInfo{SenderID: peerID}))
 }
 
-func TestTxMempool_CheckTxSameSender(t *testing.T) {
-	txmp := setup(t, 100)
-	peerID := uint16(1)
-	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
-
-	prefix1 := make([]byte, 20)
-	_, err := rng.Read(prefix1)
-	require.NoError(t, err)
-
-	prefix2 := make([]byte, 20)
-	_, err = rng.Read(prefix2)
-	require.NoError(t, err)
-
-	tx1 := []byte(fmt.Sprintf("sender-0=%X=%d", prefix1, 50))
-	tx2 := []byte(fmt.Sprintf("sender-0=%X=%d", prefix2, 50))
-
-	require.NoError(t, txmp.CheckTx(tx1, nil, mempool.TxInfo{SenderID: peerID}))
-	require.Equal(t, 1, txmp.Size())
-	require.NoError(t, txmp.CheckTx(tx2, nil, mempool.TxInfo{SenderID: peerID}))
-	require.Equal(t, 1, txmp.Size())
-}
-
 func TestTxMempool_ConcurrentTxs(t *testing.T) {
 	txmp := setup(t, 100)
 	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
@@ -554,7 +547,7 @@ func TestTxMempool_ExpiredTxs_Timestamp(t *testing.T) {
 		if _, ok := txmp.txByKey[tx.tx.Key()]; ok {
 			t.Errorf("Transaction %X should have been purged for TTL", tx.tx.Key())
 		}
-		if txmp.cache.Has(tx.tx) {
+		if txmp.rejectedTxCache.Has(tx.tx.Key()) {
 			t.Errorf("Transaction %X should have been removed from the cache", tx.tx.Key())
 		}
 	}
@@ -638,17 +631,7 @@ func TestTxMempool_CheckTxPostCheckError(t *testing.T) {
 			tx := make([]byte, txmp.config.MaxTxBytes-1)
 			_, err := rng.Read(tx)
 			require.NoError(t, err)
-
-			callback := func(res *abci.Response) {
-				checkTxRes, ok := res.Value.(*abci.Response_CheckTx)
-				require.True(t, ok)
-				expectedErrString := ""
-				if testCase.err != nil {
-					expectedErrString = testCase.err.Error()
-				}
-				require.Equal(t, expectedErrString, checkTxRes.CheckTx.MempoolError)
-			}
-			require.NoError(t, txmp.CheckTx(tx, callback, mempool.TxInfo{SenderID: 0}))
+			require.Equal(t, testCase.err, txmp.CheckTx(tx, nil, mempool.TxInfo{SenderID: 0}))
 		})
 	}
 }

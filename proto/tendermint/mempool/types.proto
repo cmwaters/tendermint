@@ -7,13 +7,13 @@ message Txs {
   repeated bytes txs = 1;
 }
 
-message HasTx {
-  bytes tx_id = 1;
+message SeenTx {
+  bytes tx_key = 1;
 }
 
 message Message {
   oneof sum {
     Txs   txs    = 1;
-    HasTx has_tx = 2;
+    SeenTx seen_tx = 2;
   }
 }

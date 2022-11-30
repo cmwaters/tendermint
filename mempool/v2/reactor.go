@@ -1,7 +1,6 @@
 package v2
 
 import (
-	"errors"
 	"fmt"
 	"time"
 
@@ -173,13 +172,42 @@ func (memR *Reactor) ReceiveEnvelope(e p2p.Envelope) {
 		var err error
 		for _, tx := range protoTxs {
 			ntx := types.Tx(tx)
-			err = memR.mempool.CheckTx(ntx, nil, txInfo)
-			if errors.Is(err, mempool.ErrTxInCache) {
-				memR.Logger.Debug("Tx already exists in cache", "tx", ntx.String())
-			} else if err != nil {
-				memR.Logger.Info("Could not check tx", "tx", ntx.String(), "err", err)
+			key := ntx.Key()
+			if memR.mempool.IsRejectedTx(key) {
+				// The peer has sent us a transaction that we have already rejected. Since `CheckTx` can
+				// be non-deterministic, we don't punish the peer but instead just ignore the msg
+				continue
+			}
+			if memR.mempool.WasRecentlyEvicted(key, ntx) {
+				// the transaction was recently evicted. If true, we attempt to re-add it to the mempool
+				// skipping check tx.
+				err := memR.mempool.TryReinsertEvictedTx(key, ntx, txInfo.SenderID)
+				if err != nil {
+					memR.Logger.Info("Unable to readd evicted tx", "tx_key", key, "err", err)
+				}
+				continue
+			}
+			if memR.mempool.SeenTx(key) {
+				// We have already received this transaction. We mark the peer that send the message
+				// as already seeing the transaction as well and then we finish
+				memR.mempool.PeerHasTx(txInfo.SenderID, key)
+				continue
+			}
+			memR.broadcastSeenTx(key)
+			_, err = memR.mempool.TryAddNewTx(ntx, key, txInfo)
+			if err != nil {
+				memR.Logger.Info("Could not add tx", "tx_key", key, "err", err)
 			}
 		}
+	case *protomem.SeenTx:
+		if len(msg.TxKey) != types.TxKeySize {
+			memR.Logger.Error("Peer sent SeenTx with incorrect key size", "len", len(msg.TxKey))
+			return
+		}
+		var txKey [types.TxKeySize]byte
+		copy(txKey[:], msg.TxKey)
+		memR.mempool.PeerHasTx(memR.ids.GetForPeer(e.Src), types.TxKey(txKey))
+
 	default:
 		memR.Logger.Error("unknown message type", "src", e.Src, "chId", e.ChannelID, "msg", e.Message)
 		memR.Switch.StopPeerForError(e.Src, fmt.Errorf("mempool cannot handle message of type: %T", e.Message))
@@ -253,7 +281,7 @@ func (memR *Reactor) broadcastTxRoutine(peer p2p.Peer) {
 		}
 
 		// Allow for a lag of 1 block.
-		memTx := next.Value.(*WrappedTx)
+		memTx := next.Value.(*wrappedTx)
 		if peerState.GetHeight() < memTx.height-1 {
 			time.Sleep(mempool.PeerCatchupSleepIntervalMS * time.Millisecond)
 			continue
@@ -284,6 +312,17 @@ func (memR *Reactor) broadcastTxRoutine(peer p2p.Peer) {
 			return
 		}
 	}
+}
+
+func (memR *Reactor) broadcastSeenTx(txKey types.TxKey) {
+	memR.Logger.Debug(
+		"broadcasting seen tx",
+		"tx_key", txKey,
+	)
+	memR.Switch.BroadcastEnvelope(p2p.Envelope{
+		ChannelID: mempool.MempoolChannel,
+		Message:   &protomem.SeenTx{TxKey: txKey[:]},
+	})
 }
 
 //-----------------------------------------------------------------------------

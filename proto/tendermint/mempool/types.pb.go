@@ -66,22 +66,22 @@ func (m *Txs) GetTxs() [][]byte {
 	return nil
 }
 
-type HasTx struct {
-	TxId []byte `protobuf:"bytes,1,opt,name=tx_id,json=txId,proto3" json:"tx_id,omitempty"`
+type SeenTx struct {
+	TxKey []byte `protobuf:"bytes,1,opt,name=tx_key,json=txKey,proto3" json:"tx_key,omitempty"`
 }
 
-func (m *HasTx) Reset()         { *m = HasTx{} }
-func (m *HasTx) String() string { return proto.CompactTextString(m) }
-func (*HasTx) ProtoMessage()    {}
-func (*HasTx) Descriptor() ([]byte, []int) {
+func (m *SeenTx) Reset()         { *m = SeenTx{} }
+func (m *SeenTx) String() string { return proto.CompactTextString(m) }
+func (*SeenTx) ProtoMessage()    {}
+func (*SeenTx) Descriptor() ([]byte, []int) {
 	return fileDescriptor_2af51926fdbcbc05, []int{1}
 }
-func (m *HasTx) XXX_Unmarshal(b []byte) error {
+func (m *SeenTx) XXX_Unmarshal(b []byte) error {
 	return m.Unmarshal(b)
 }
-func (m *HasTx) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
+func (m *SeenTx) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
 	if deterministic {
-		return xxx_messageInfo_HasTx.Marshal(b, m, deterministic)
+		return xxx_messageInfo_SeenTx.Marshal(b, m, deterministic)
 	} else {
 		b = b[:cap(b)]
 		n, err := m.MarshalToSizedBuffer(b)
@@ -91,21 +91,21 @@ func (m *HasTx) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
 		return b[:n], nil
 	}
 }
-func (m *HasTx) XXX_Merge(src proto.Message) {
-	xxx_messageInfo_HasTx.Merge(m, src)
+func (m *SeenTx) XXX_Merge(src proto.Message) {
+	xxx_messageInfo_SeenTx.Merge(m, src)
 }
-func (m *HasTx) XXX_Size() int {
+func (m *SeenTx) XXX_Size() int {
 	return m.Size()
 }
-func (m *HasTx) XXX_DiscardUnknown() {
-	xxx_messageInfo_HasTx.DiscardUnknown(m)
+func (m *SeenTx) XXX_DiscardUnknown() {
+	xxx_messageInfo_SeenTx.DiscardUnknown(m)
 }
 
-var xxx_messageInfo_HasTx proto.InternalMessageInfo
+var xxx_messageInfo_SeenTx proto.InternalMessageInfo
 
-func (m *HasTx) GetTxId() []byte {
+func (m *SeenTx) GetTxKey() []byte {
 	if m != nil {
-		return m.TxId
+		return m.TxKey
 	}
 	return nil
 }
@@ -114,7 +114,7 @@ type Message struct {
 	// Types that are valid to be assigned to Sum:
 	//
 	//	*Message_Txs
-	//	*Message_HasTx
+	//	*Message_SeenTx
 	Sum isMessage_Sum `protobuf_oneof:"sum"`
 }
 
@@ -160,12 +160,12 @@ type isMessage_Sum interface {
 type Message_Txs struct {
 	Txs *Txs `protobuf:"bytes,1,opt,name=txs,proto3,oneof" json:"txs,omitempty"`
 }
-type Message_HasTx struct {
-	HasTx *HasTx `protobuf:"bytes,2,opt,name=has_tx,json=hasTx,proto3,oneof" json:"has_tx,omitempty"`
+type Message_SeenTx struct {
+	SeenTx *SeenTx `protobuf:"bytes,2,opt,name=seen_tx,json=seenTx,proto3,oneof" json:"seen_tx,omitempty"`
 }
 
-func (*Message_Txs) isMessage_Sum()   {}
-func (*Message_HasTx) isMessage_Sum() {}
+func (*Message_Txs) isMessage_Sum()    {}
+func (*Message_SeenTx) isMessage_Sum() {}
 
 func (m *Message) GetSum() isMessage_Sum {
 	if m != nil {
@@ -181,9 +181,9 @@ func (m *Message) GetTxs() *Txs {
 	return nil
 }
 
-func (m *Message) GetHasTx() *HasTx {
-	if x, ok := m.GetSum().(*Message_HasTx); ok {
-		return x.HasTx
+func (m *Message) GetSeenTx() *SeenTx {
+	if x, ok := m.GetSum().(*Message_SeenTx); ok {
+		return x.SeenTx
 	}
 	return nil
 }
@@ -192,35 +192,35 @@ func (m *Message) GetHasTx() *HasTx {
 func (*Message) XXX_OneofWrappers() []interface{} {
 	return []interface{}{
 		(*Message_Txs)(nil),
-		(*Message_HasTx)(nil),
+		(*Message_SeenTx)(nil),
 	}
 }
 
 func init() {
 	proto.RegisterType((*Txs)(nil), "tendermint.mempool.Txs")
-	proto.RegisterType((*HasTx)(nil), "tendermint.mempool.HasTx")
+	proto.RegisterType((*SeenTx)(nil), "tendermint.mempool.SeenTx")
 	proto.RegisterType((*Message)(nil), "tendermint.mempool.Message")
 }
 
 func init() { proto.RegisterFile("tendermint/mempool/types.proto", fileDescriptor_2af51926fdbcbc05) }
 
 var fileDescriptor_2af51926fdbcbc05 = []byte{
-	// 236 bytes of a gzipped FileDescriptorProto
+	// 240 bytes of a gzipped FileDescriptorProto
 	0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0xff, 0xe2, 0x92, 0x2b, 0x49, 0xcd, 0x4b,
 	0x49, 0x2d, 0xca, 0xcd, 0xcc, 0x2b, 0xd1, 0xcf, 0x4d, 0xcd, 0x2d, 0xc8, 0xcf, 0xcf, 0xd1, 0x2f,
 	0xa9, 0x2c, 0x48, 0x2d, 0xd6, 0x2b, 0x28, 0xca, 0x2f, 0xc9, 0x17, 0x12, 0x42, 0xc8, 0xeb, 0x41,
 	0xe5, 0x95, 0xc4, 0xb9, 0x98, 0x43, 0x2a, 0x8a, 0x85, 0x04, 0xb8, 0x98, 0x4b, 0x2a, 0x8a, 0x25,
-	0x18, 0x15, 0x98, 0x35, 0x78, 0x82, 0x40, 0x4c, 0x25, 0x19, 0x2e, 0x56, 0x8f, 0xc4, 0xe2, 0x90,
-	0x0a, 0x21, 0x61, 0x2e, 0xd6, 0x92, 0x8a, 0xf8, 0xcc, 0x14, 0x09, 0x46, 0x05, 0x46, 0x0d, 0x9e,
-	0x20, 0x96, 0x92, 0x0a, 0xcf, 0x14, 0xa5, 0x42, 0x2e, 0x76, 0xdf, 0xd4, 0xe2, 0xe2, 0xc4, 0xf4,
-	0x54, 0x21, 0x6d, 0x98, 0x56, 0x46, 0x0d, 0x6e, 0x23, 0x71, 0x3d, 0x4c, 0x3b, 0xf4, 0x42, 0x2a,
-	0x8a, 0x3d, 0x18, 0xc0, 0xa6, 0x0a, 0x19, 0x71, 0xb1, 0x65, 0x24, 0x16, 0xc7, 0x97, 0x54, 0x48,
-	0x30, 0x81, 0xd5, 0x4b, 0x62, 0x53, 0x0f, 0xb6, 0xd7, 0x83, 0x21, 0x88, 0x35, 0x03, 0xc4, 0x70,
-	0x62, 0xe5, 0x62, 0x2e, 0x2e, 0xcd, 0x75, 0x0a, 0x3e, 0xf1, 0x48, 0x8e, 0xf1, 0xc2, 0x23, 0x39,
-	0xc6, 0x07, 0x8f, 0xe4, 0x18, 0x27, 0x3c, 0x96, 0x63, 0xb8, 0xf0, 0x58, 0x8e, 0xe1, 0xc6, 0x63,
-	0x39, 0x86, 0x28, 0xcb, 0xf4, 0xcc, 0x92, 0x8c, 0xd2, 0x24, 0xbd, 0xe4, 0xfc, 0x5c, 0x7d, 0xa4,
-	0x20, 0x40, 0x62, 0x82, 0xfd, 0xaf, 0x8f, 0x19, 0x3c, 0x49, 0x6c, 0x60, 0x19, 0x63, 0x40, 0x00,
-	0x00, 0x00, 0xff, 0xff, 0x30, 0x18, 0x5a, 0xa2, 0x3b, 0x01, 0x00, 0x00,
+	0x18, 0x15, 0x98, 0x35, 0x78, 0x82, 0x40, 0x4c, 0x25, 0x79, 0x2e, 0xb6, 0xe0, 0xd4, 0xd4, 0xbc,
+	0x90, 0x0a, 0x21, 0x51, 0x2e, 0xb6, 0x92, 0x8a, 0xf8, 0xec, 0xd4, 0x4a, 0x09, 0x46, 0x05, 0x46,
+	0x0d, 0x9e, 0x20, 0xd6, 0x92, 0x0a, 0xef, 0xd4, 0x4a, 0xa5, 0x12, 0x2e, 0x76, 0xdf, 0xd4, 0xe2,
+	0xe2, 0xc4, 0xf4, 0x54, 0x21, 0x6d, 0x98, 0x6e, 0x46, 0x0d, 0x6e, 0x23, 0x71, 0x3d, 0x4c, 0x6b,
+	0xf4, 0x42, 0x2a, 0x8a, 0x3d, 0x18, 0xc0, 0x06, 0x0b, 0x99, 0x72, 0xb1, 0x17, 0xa7, 0xa6, 0xe6,
+	0xc5, 0x97, 0x54, 0x48, 0x30, 0x81, 0x35, 0x48, 0x61, 0xd3, 0x00, 0xb1, 0xdb, 0x83, 0x21, 0x88,
+	0xad, 0x18, 0xcc, 0x72, 0x62, 0xe5, 0x62, 0x2e, 0x2e, 0xcd, 0x75, 0x0a, 0x3e, 0xf1, 0x48, 0x8e,
+	0xf1, 0xc2, 0x23, 0x39, 0xc6, 0x07, 0x8f, 0xe4, 0x18, 0x27, 0x3c, 0x96, 0x63, 0xb8, 0xf0, 0x58,
+	0x8e, 0xe1, 0xc6, 0x63, 0x39, 0x86, 0x28, 0xcb, 0xf4, 0xcc, 0x92, 0x8c, 0xd2, 0x24, 0xbd, 0xe4,
+	0xfc, 0x5c, 0x7d, 0xa4, 0x80, 0x40, 0x62, 0x82, 0x43, 0x41, 0x1f, 0x33, 0x90, 0x92, 0xd8, 0xc0,
+	0x32, 0xc6, 0x80, 0x00, 0x00, 0x00, 0xff, 0xff, 0x25, 0xcf, 0x38, 0xd6, 0x41, 0x01, 0x00, 0x00,
 }
 
 func (m *Txs) Marshal() (dAtA []byte, err error) {
@@ -255,7 +255,7 @@ func (m *Txs) MarshalToSizedBuffer(dAtA []byte) (int, error) {
 	return len(dAtA) - i, nil
 }
 
-func (m *HasTx) Marshal() (dAtA []byte, err error) {
+func (m *SeenTx) Marshal() (dAtA []byte, err error) {
 	size := m.Size()
 	dAtA = make([]byte, size)
 	n, err := m.MarshalToSizedBuffer(dAtA[:size])
@@ -265,20 +265,20 @@ func (m *HasTx) Marshal() (dAtA []byte, err error) {
 	return dAtA[:n], nil
 }
 
-func (m *HasTx) MarshalTo(dAtA []byte) (int, error) {
+func (m *SeenTx) MarshalTo(dAtA []byte) (int, error) {
 	size := m.Size()
 	return m.MarshalToSizedBuffer(dAtA[:size])
 }
 
-func (m *HasTx) MarshalToSizedBuffer(dAtA []byte) (int, error) {
+func (m *SeenTx) MarshalToSizedBuffer(dAtA []byte) (int, error) {
 	i := len(dAtA)
 	_ = i
 	var l int
 	_ = l
-	if len(m.TxId) > 0 {
-		i -= len(m.TxId)
-		copy(dAtA[i:], m.TxId)
-		i = encodeVarintTypes(dAtA, i, uint64(len(m.TxId)))
+	if len(m.TxKey) > 0 {
+		i -= len(m.TxKey)
+		copy(dAtA[i:], m.TxKey)
+		i = encodeVarintTypes(dAtA, i, uint64(len(m.TxKey)))
 		i--
 		dAtA[i] = 0xa
 	}
@@ -338,16 +338,16 @@ func (m *Message_Txs) MarshalToSizedBuffer(dAtA []byte) (int, error) {
 	}
 	return len(dAtA) - i, nil
 }
-func (m *Message_HasTx) MarshalTo(dAtA []byte) (int, error) {
+func (m *Message_SeenTx) MarshalTo(dAtA []byte) (int, error) {
 	size := m.Size()
 	return m.MarshalToSizedBuffer(dAtA[:size])
 }
 
-func (m *Message_HasTx) MarshalToSizedBuffer(dAtA []byte) (int, error) {
+func (m *Message_SeenTx) MarshalToSizedBuffer(dAtA []byte) (int, error) {
 	i := len(dAtA)
-	if m.HasTx != nil {
+	if m.SeenTx != nil {
 		{
-			size, err := m.HasTx.MarshalToSizedBuffer(dAtA[:i])
+			size, err := m.SeenTx.MarshalToSizedBuffer(dAtA[:i])
 			if err != nil {
 				return 0, err
 			}
@@ -385,13 +385,13 @@ func (m *Txs) Size() (n int) {
 	return n
 }
 
-func (m *HasTx) Size() (n int) {
+func (m *SeenTx) Size() (n int) {
 	if m == nil {
 		return 0
 	}
 	var l int
 	_ = l
-	l = len(m.TxId)
+	l = len(m.TxKey)
 	if l > 0 {
 		n += 1 + l + sovTypes(uint64(l))
 	}
@@ -422,14 +422,14 @@ func (m *Message_Txs) Size() (n int) {
 	}
 	return n
 }
-func (m *Message_HasTx) Size() (n int) {
+func (m *Message_SeenTx) Size() (n int) {
 	if m == nil {
 		return 0
 	}
 	var l int
 	_ = l
-	if m.HasTx != nil {
-		l = m.HasTx.Size()
+	if m.SeenTx != nil {
+		l = m.SeenTx.Size()
 		n += 1 + l + sovTypes(uint64(l))
 	}
 	return n
@@ -523,7 +523,7 @@ func (m *Txs) Unmarshal(dAtA []byte) error {
 	}
 	return nil
 }
-func (m *HasTx) Unmarshal(dAtA []byte) error {
+func (m *SeenTx) Unmarshal(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
 	for iNdEx < l {
@@ -546,15 +546,15 @@ func (m *HasTx) Unmarshal(dAtA []byte) error {
 		fieldNum := int32(wire >> 3)
 		wireType := int(wire & 0x7)
 		if wireType == 4 {
-			return fmt.Errorf("proto: HasTx: wiretype end group for non-group")
+			return fmt.Errorf("proto: SeenTx: wiretype end group for non-group")
 		}
 		if fieldNum <= 0 {
-			return fmt.Errorf("proto: HasTx: illegal tag %d (wire type %d)", fieldNum, wire)
+			return fmt.Errorf("proto: SeenTx: illegal tag %d (wire type %d)", fieldNum, wire)
 		}
 		switch fieldNum {
 		case 1:
 			if wireType != 2 {
-				return fmt.Errorf("proto: wrong wireType = %d for field TxId", wireType)
+				return fmt.Errorf("proto: wrong wireType = %d for field TxKey", wireType)
 			}
 			var byteLen int
 			for shift := uint(0); ; shift += 7 {
@@ -581,9 +581,9 @@ func (m *HasTx) Unmarshal(dAtA []byte) error {
 			if postIndex > l {
 				return io.ErrUnexpectedEOF
 			}
-			m.TxId = append(m.TxId[:0], dAtA[iNdEx:postIndex]...)
-			if m.TxId == nil {
-				m.TxId = []byte{}
+			m.TxKey = append(m.TxKey[:0], dAtA[iNdEx:postIndex]...)
+			if m.TxKey == nil {
+				m.TxKey = []byte{}
 			}
 			iNdEx = postIndex
 		default:
@@ -673,7 +673,7 @@ func (m *Message) Unmarshal(dAtA []byte) error {
 			iNdEx = postIndex
 		case 2:
 			if wireType != 2 {
-				return fmt.Errorf("proto: wrong wireType = %d for field HasTx", wireType)
+				return fmt.Errorf("proto: wrong wireType = %d for field SeenTx", wireType)
 			}
 			var msglen int
 			for shift := uint(0); ; shift += 7 {
@@ -700,11 +700,11 @@ func (m *Message) Unmarshal(dAtA []byte) error {
 			if postIndex > l {
 				return io.ErrUnexpectedEOF
 			}
-			v := &HasTx{}
+			v := &SeenTx{}
 			if err := v.Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
 				return err
 			}
-			m.Sum = &Message_HasTx{v}
+			m.Sum = &Message_SeenTx{v}
 			iNdEx = postIndex
 		default:
 			iNdEx = preIndex
