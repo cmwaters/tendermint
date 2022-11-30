@@ -101,14 +101,14 @@ type EvictedTxInfo struct {
 }
 
 type EvictedTxCache struct {
-	mtx tmsync.Mutex
-	size int
+	mtx   tmsync.Mutex
+	size  int
 	cache map[types.TxKey]*EvictedTxInfo
 }
 
 func NewEvictedTxCache(size int) *EvictedTxCache {
 	return &EvictedTxCache{
-		size: size,
+		size:  size,
 		cache: make(map[types.TxKey]*EvictedTxInfo),
 	}
 }
@@ -169,20 +169,20 @@ func (c *EvictedTxCache) Prune(limit time.Time) {
 // seenTxSet records transactions that have been
 // seen by other peers but not yet by us
 type SeenTxSet struct {
-	mtx tmsync.Mutex
+	mtx  tmsync.Mutex
 	size int
-	set map[types.TxKey]timestampedPeerSet
+	set  map[types.TxKey]timestampedPeerSet
 }
 
-type timestampedPeerSet struct{
+type timestampedPeerSet struct {
 	peers map[uint16]bool
-	time time.Time
+	time  time.Time
 }
 
 func NewSeenTxSet(size int) *SeenTxSet {
 	return &SeenTxSet{
 		size: size,
-		set: make(map[types.TxKey]timestampedPeerSet),
+		set:  make(map[types.TxKey]timestampedPeerSet),
 	}
 }
 
@@ -193,7 +193,7 @@ func (s *SeenTxSet) Add(txKey types.TxKey, peer uint16) {
 	if !exists {
 		s.set[txKey] = timestampedPeerSet{
 			peers: map[uint16]bool{peer: true},
-			time: time.Now().UTC(),
+			time:  time.Now().UTC(),
 		}
 		s.constrainSize()
 	} else {
@@ -205,7 +205,7 @@ func (s *SeenTxSet) constrainSize() {
 	if len(s.set) > s.size {
 		var (
 			oldestTxKey types.TxKey
-			oldestTime time.Time
+			oldestTime  time.Time
 		)
 		for key, set := range s.set {
 			if oldestTime.IsZero() || set.time.Before(oldestTime) {

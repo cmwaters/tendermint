@@ -13,11 +13,11 @@ import (
 
 func TestSeenTxSet(t *testing.T) {
 	var (
-		tx1Key = types.Tx("tx1").Key()
-		tx2Key = types.Tx("tx2").Key()
-		tx3Key = types.Tx("tx3").Key()
-		peer1 uint16 = 1
-		peer2 uint16 = 2
+		tx1Key        = types.Tx("tx1").Key()
+		tx2Key        = types.Tx("tx2").Key()
+		tx3Key        = types.Tx("tx3").Key()
+		peer1  uint16 = 1
+		peer2  uint16 = 2
 	)
 
 	seenSet := v2.NewSeenTxSet(2)
@@ -62,9 +62,9 @@ func TestCacheRemove(t *testing.T) {
 
 func TestEvictedTxCache(t *testing.T) {
 	var (
-		tx1 = types.Tx("tx1")
-		tx2 = types.Tx("tx2")
-		tx3 = types.Tx("tx3")
+		tx1  = types.Tx("tx1")
+		tx2  = types.Tx("tx2")
+		tx3  = types.Tx("tx3")
 		wtx1 = v2.NewWrappedTx(
 			tx1, tx1.Key(), 10, 1, 5, "",
 		)
@@ -92,4 +92,3 @@ func TestEvictedTxCache(t *testing.T) {
 	require.False(t, cache.Has(tx2.Key()))
 	require.False(t, cache.Has(tx3.Key()))
 }
-

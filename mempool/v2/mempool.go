@@ -24,7 +24,7 @@ var _ mempool.Mempool = (*TxMempool)(nil)
 
 const (
 	evictedTxCacheSize = 100
-	seenByPeerSetSize = 100
+	seenByPeerSetSize  = 100
 )
 
 // TxMempoolOption sets an optional parameter on the TxMempool.
@@ -41,10 +41,10 @@ type TxMempoolOption func(*TxMempool)
 // not take priority into account).
 type TxMempool struct {
 	// Immutable fields
-	logger          log.Logger
-	config          *config.MempoolConfig
-	proxyAppConn    proxy.AppConnMempool
-	metrics         *mempool.Metrics
+	logger       log.Logger
+	config       *config.MempoolConfig
+	proxyAppConn proxy.AppConnMempool
+	metrics      *mempool.Metrics
 
 	// Atomically-updated fields
 	txsBytes int64 // atomic: the total size of all transactions in the mempool, in bytes
@@ -60,7 +60,7 @@ type TxMempool struct {
 	// Concurrent list of valid transactions (passed CheckTx)
 	txs *clist.CList
 	// Thread-safe cache of rejected transactions for quick look-up
-	rejectedTxCache *LRUTxCache 
+	rejectedTxCache *LRUTxCache
 	// Thread-safe cache of valid txs that were evicted
 	evictedTxs *EvictedTxCache
 	// Thread-safe list of transactions peers have seen that we have not yet seen
@@ -403,15 +403,16 @@ func (txmp *TxMempool) Flush() {
 // It returns true if the mempool has the transaction and has recorded the
 // peer and false if the mempool has not yet seen the transaction that the
 // peer has
-func (txmp *TxMempool) PeerHasTx(peer uint16, txKey types.TxKey) bool {
+func (txmp *TxMempool) PeerHasTx(peer uint16, txKey types.TxKey) {
 	txmp.mtx.RLock()
 	defer txmp.mtx.RUnlock()
 	el, exists := txmp.txByKey[txKey]
 	if exists {
 		wtx := el.Value.(*WrappedTx)
 		wtx.SetPeer(peer)
+	} else {
+		txmp.seenByPeersSet.Add(txKey, peer)
 	}
-	return exists
 }
 
 // allEntriesSorted returns a slice of all the transactions currently in the
@@ -590,8 +591,7 @@ func (txmp *TxMempool) addNewTransaction(wtx *WrappedTx, checkTxRes *abci.Respon
 	// priority than the application assigned to this new one, and evict as many
 	// of them as necessary to make room for tx. If no such items exist, we
 	// discard tx.
-
-	if err := txmp.canAddTx(wtx); err != nil {
+	if !txmp.canAddTx(wtx) {
 		var victims []*clist.CElement // eligible transactions for eviction
 		var victimBytes int64         // total size of victims
 		for cur := txmp.txs.Front(); cur != nil; cur = cur.Next() {
@@ -643,6 +643,14 @@ func (txmp *TxMempool) addNewTransaction(wtx *WrappedTx, checkTxRes *abci.Respon
 			if evictedBytes >= wtx.Size() {
 				break
 			}
+		}
+	}
+
+	// check if the transaction has been seen by other peers before
+	peers := txmp.seenByPeersSet.Pop(wtx.key)
+	if peers != nil {
+		for peer := range peers {
+			wtx.SetPeer(peer)
 		}
 	}
 
@@ -786,20 +794,15 @@ func (txmp *TxMempool) recheckTransactions() {
 // canAddTx returns an error if we cannot insert the provided *WrappedTx into
 // the mempool due to mempool configured constraints. Otherwise, nil is
 // returned and the transaction can be inserted into the mempool.
-func (txmp *TxMempool) canAddTx(wtx *WrappedTx) error {
+func (txmp *TxMempool) canAddTx(wtx *WrappedTx) bool {
 	numTxs := txmp.Size()
 	txBytes := txmp.SizeBytes()
 
 	if numTxs >= txmp.config.Size || wtx.Size()+txBytes > txmp.config.MaxTxsBytes {
-		return mempool.ErrMempoolIsFull{
-			NumTxs:      numTxs,
-			MaxTxs:      txmp.config.Size,
-			TxsBytes:    txBytes,
-			MaxTxsBytes: txmp.config.MaxTxsBytes,
-		}
+		return false
 	}
 
-	return nil
+	return true
 }
 
 // purgeExpiredTxs removes all transactions from the mempool that have exceeded

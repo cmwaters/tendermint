@@ -22,14 +22,14 @@ type WrappedTx struct {
 
 func NewWrappedTx(tx types.Tx, key types.TxKey, height, gasWanted, priority int64, sender string) *WrappedTx {
 	return &WrappedTx{
-		tx: tx,
-		key: key,
-		height: height,
+		tx:        tx,
+		key:       key,
+		height:    height,
 		timestamp: time.Now().UTC(),
 		gasWanted: gasWanted,
-		priority: priority,
-		sender: sender,
-		peers: map[uint16]bool{},
+		priority:  priority,
+		sender:    sender,
+		peers:     map[uint16]bool{},
 	}
 }
 
