@@ -219,10 +219,7 @@ func TestTxMempool_Eviction(t *testing.T) {
 	}
 
 	txEvicted := func(spec string) bool {
-		txmp.Lock()
-		defer txmp.Unlock()
-		_, ok := txmp.evictedTxs[types.Tx(spec).Key()]
-		return ok
+		return txmp.evictedTxs.Has(types.Tx(spec).Key())
 	}
 
 	// A transaction bigger than the mempool should be rejected even when there
@@ -231,7 +228,6 @@ func TestTxMempool_Eviction(t *testing.T) {
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "mempool is full")
 	require.Equal(t, 0, txmp.Size())
-	require.Len(t, txmp.evictedTxs, 1)
 
 	// Nearly-fill the mempool with a low-priority transaction, to show that it
 	// is evicted even when slots are available for a higher-priority tx.
@@ -247,7 +243,6 @@ func TestTxMempool_Eviction(t *testing.T) {
 	require.True(t, txExists("key1=0000=25"))
 	require.False(t, txExists(bigTx))
 	require.True(t, txEvicted(bigTx))
-	require.Len(t, txmp.evictedTxs, 2)
 	require.Equal(t, int64(len("key1=0000=25")), txmp.SizeBytes())
 
 	// Now fill up the rest of the slots with other transactions.

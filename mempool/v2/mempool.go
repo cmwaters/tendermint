@@ -24,6 +24,7 @@ var _ mempool.Mempool = (*TxMempool)(nil)
 
 const (
 	evictedTxCacheSize = 100
+	seenByPeerSetSize = 100
 )
 
 // TxMempoolOption sets an optional parameter on the TxMempool.
@@ -44,7 +45,6 @@ type TxMempool struct {
 	config          *config.MempoolConfig
 	proxyAppConn    proxy.AppConnMempool
 	metrics         *mempool.Metrics
-	rejectedTxCache *LRUTxCache // rejected Txs by CheckTx
 
 	// Atomically-updated fields
 	txsBytes int64 // atomic: the total size of all transactions in the mempool, in bytes
@@ -59,10 +59,15 @@ type TxMempool struct {
 
 	// Concurrent list of valid transactions (passed CheckTx)
 	txs *clist.CList
+	// Thread-safe cache of rejected transactions for quick look-up
+	rejectedTxCache *LRUTxCache 
+	// Thread-safe cache of valid txs that were evicted
+	evictedTxs *EvictedTxCache
+	// Thread-safe list of transactions peers have seen that we have not yet seen
+	seenByPeersSet *SeenTxSet
 
 	// Synchronized fields, protected by mtx.
 	mtx        *sync.RWMutex
-	evictedTxs map[types.TxKey]*evictedTxInfo  // txs that were evicted but passed CheckTx
 	txByKey    map[types.TxKey]*clist.CElement // used as a lookup table
 	txBySender map[string]*clist.CElement      // for sender != ""
 }
@@ -83,7 +88,8 @@ func NewTxMempool(
 		proxyAppConn:    proxyAppConn,
 		metrics:         mempool.NopMetrics(),
 		rejectedTxCache: NewLRUTxCache(cfg.CacheSize),
-		evictedTxs:      make(map[types.TxKey]*evictedTxInfo),
+		evictedTxs:      NewEvictedTxCache(evictedTxCacheSize),
+		seenByPeersSet:  NewSeenTxSet(seenByPeerSetSize),
 		txs:             clist.New(),
 		mtx:             new(sync.RWMutex),
 		height:          height,
@@ -180,38 +186,26 @@ func (txmp *TxMempool) IsRejectedTx(txKey types.TxKey) bool {
 	return txmp.rejectedTxCache.Has(txKey)
 }
 
-func (txmp *TxMempool) WasRecentlyEvicted(txKey types.TxKey, tx types.Tx) bool {
-	txmp.mtx.RLock()
-	defer txmp.mtx.RUnlock()
-	_, exists := txmp.evictedTxs[txKey]
-	return exists
+func (txmp *TxMempool) WasRecentlyEvicted(txKey types.TxKey) bool {
+	return txmp.evictedTxs.Has(txKey)
 }
 
 func (txmp *TxMempool) TryReinsertEvictedTx(txKey types.TxKey, tx types.Tx, peer uint16) error {
-	txmp.mtx.RLock()
-	info, exists := txmp.evictedTxs[txKey]
-	txmp.mtx.RUnlock()
-	if !exists {
+	info := txmp.evictedTxs.Pop(txKey)
+	if info == nil {
 		return nil
 	}
-
-	wtx := &wrappedTx{
-		tx:        tx,
-		key:       tx.Key(),
-		timestamp: time.Now().UTC(),
-		height:    txmp.height,
-		peers:     info.peers,
-		priority:  info.priority,
-		gasWanted: info.gasWanted,
-		sender:    info.sender,
-	}
+	wtx := NewWrappedTx(
+		tx, txKey, txmp.height, info.gasWanted, info.priority, info.sender,
+	)
+	wtx.peers = info.peers
+	wtx.SetPeer(peer)
 	checkTxResp := &abci.ResponseCheckTx{
 		Code:      abci.CodeTypeOK,
 		Priority:  info.priority,
 		Sender:    info.sender,
 		GasWanted: info.gasWanted,
 	}
-	wtx.SetPeer(peer)
 	return txmp.addNewTransaction(wtx, checkTxResp)
 }
 
@@ -239,7 +233,7 @@ func (txmp *TxMempool) CheckTx(tx types.Tx, cb func(*abci.Response), txInfo memp
 		return mempool.ErrTxInCache
 	}
 
-	if txmp.WasRecentlyEvicted(key, tx) {
+	if txmp.WasRecentlyEvicted(key) {
 		// the transaction was recently evicted. If true, we attempt to re-add it to the mempool
 		// skipping check tx.
 		return nil
@@ -305,16 +299,9 @@ func (txmp *TxMempool) tryAddNewTx(tx types.Tx, key types.TxKey, txInfo mempool.
 	}
 
 	// Create wrapped tx
-	wtx := &wrappedTx{
-		tx:        tx,
-		key:       key,
-		timestamp: time.Now().UTC(),
-		height:    txmp.height,
-		priority:  rsp.Priority,
-		gasWanted: rsp.GasWanted,
-		sender:    rsp.Sender,
-		peers:     map[uint16]bool{},
-	}
+	wtx := NewWrappedTx(
+		tx, key, txmp.height, rsp.GasWanted, rsp.Priority, rsp.Sender,
+	)
 	if txInfo.SenderID > 0 {
 		wtx.SetPeer(txInfo.SenderID)
 	}
@@ -371,7 +358,7 @@ func (txmp *TxMempool) RemoveTxByKey(txKey types.TxKey) error {
 // The caller must hold txmp.mtx excluxively.
 func (txmp *TxMempool) removeTxByKey(key types.TxKey) error {
 	if elt, ok := txmp.txByKey[key]; ok {
-		w := elt.Value.(*wrappedTx)
+		w := elt.Value.(*WrappedTx)
 		delete(txmp.txByKey, key)
 		delete(txmp.txBySender, w.sender)
 		txmp.txs.Remove(elt)
@@ -386,7 +373,7 @@ func (txmp *TxMempool) removeTxByKey(key types.TxKey) error {
 // removeTxByElement removes the specified transaction element from the mempool.
 // The caller must hold txmp.mtx exclusively.
 func (txmp *TxMempool) removeTxByElement(elt *clist.CElement) {
-	w := elt.Value.(*wrappedTx)
+	w := elt.Value.(*WrappedTx)
 	delete(txmp.txByKey, w.tx.Key())
 	delete(txmp.txBySender, w.sender)
 	txmp.txs.Remove(elt)
@@ -421,7 +408,7 @@ func (txmp *TxMempool) PeerHasTx(peer uint16, txKey types.TxKey) bool {
 	defer txmp.mtx.RUnlock()
 	el, exists := txmp.txByKey[txKey]
 	if exists {
-		wtx := el.Value.(*wrappedTx)
+		wtx := el.Value.(*WrappedTx)
 		wtx.SetPeer(peer)
 	}
 	return exists
@@ -430,14 +417,14 @@ func (txmp *TxMempool) PeerHasTx(peer uint16, txKey types.TxKey) bool {
 // allEntriesSorted returns a slice of all the transactions currently in the
 // mempool, sorted in nonincreasing order by priority with ties broken by
 // increasing order of arrival time.
-func (txmp *TxMempool) allEntriesSorted() []*wrappedTx {
+func (txmp *TxMempool) allEntriesSorted() []*WrappedTx {
 	txmp.mtx.RLock()
 	defer txmp.mtx.RUnlock()
 
-	all := make([]*wrappedTx, len(txmp.txByKey))
+	all := make([]*WrappedTx, len(txmp.txByKey))
 	idx := 0
 	for _, tx := range txmp.txByKey {
-		all[idx] = tx.Value.(*wrappedTx)
+		all[idx] = tx.Value.(*WrappedTx)
 		idx++
 	}
 	sort.Slice(all, func(i, j int) bool {
@@ -573,7 +560,7 @@ func (txmp *TxMempool) Update(
 // transactions are evicted.
 //
 // Finally, the new transaction is added and size stats updated.
-func (txmp *TxMempool) addNewTransaction(wtx *wrappedTx, checkTxRes *abci.ResponseCheckTx) error {
+func (txmp *TxMempool) addNewTransaction(wtx *WrappedTx, checkTxRes *abci.ResponseCheckTx) error {
 	txmp.mtx.Lock()
 	defer txmp.mtx.Unlock()
 
@@ -608,7 +595,7 @@ func (txmp *TxMempool) addNewTransaction(wtx *wrappedTx, checkTxRes *abci.Respon
 		var victims []*clist.CElement // eligible transactions for eviction
 		var victimBytes int64         // total size of victims
 		for cur := txmp.txs.Front(); cur != nil; cur = cur.Next() {
-			cw := cur.Value.(*wrappedTx)
+			cw := cur.Value.(*WrappedTx)
 			if cw.priority < wtx.priority {
 				victims = append(victims, cur)
 				victimBytes += cw.Size()
@@ -620,7 +607,7 @@ func (txmp *TxMempool) addNewTransaction(wtx *wrappedTx, checkTxRes *abci.Respon
 		// drop the new one.
 		if len(victims) == 0 || victimBytes < wtx.Size() {
 			txmp.metrics.EvictedTxs.Add(1)
-			txmp.cacheEvictedTx(wtx)
+			txmp.evictedTxs.Push(wtx)
 			checkTxRes.MempoolError =
 				fmt.Sprintf("rejected valid incoming transaction; mempool is full (%X)",
 					wtx.tx.Hash())
@@ -636,8 +623,8 @@ func (txmp *TxMempool) addNewTransaction(wtx *wrappedTx, checkTxRes *abci.Respon
 		// Sort lowest priority items first so they will be evicted first.  Break
 		// ties in favor of newer items (to maintain FIFO semantics in a group).
 		sort.Slice(victims, func(i, j int) bool {
-			iw := victims[i].Value.(*wrappedTx)
-			jw := victims[j].Value.(*wrappedTx)
+			iw := victims[i].Value.(*WrappedTx)
+			jw := victims[j].Value.(*WrappedTx)
 			if iw.priority == jw.priority {
 				return iw.timestamp.After(jw.timestamp)
 			}
@@ -647,7 +634,7 @@ func (txmp *TxMempool) addNewTransaction(wtx *wrappedTx, checkTxRes *abci.Respon
 		// Evict as many of the victims as necessary to make room.
 		var evictedBytes int64
 		for _, vic := range victims {
-			w := vic.Value.(*wrappedTx)
+			w := vic.Value.(*WrappedTx)
 			txmp.evictTx(w)
 
 			// We may not need to evict all the eligible transactions.  Bail out
@@ -674,7 +661,7 @@ func (txmp *TxMempool) addNewTransaction(wtx *wrappedTx, checkTxRes *abci.Respon
 	return nil
 }
 
-func (txmp *TxMempool) insertTx(wtx *wrappedTx) {
+func (txmp *TxMempool) insertTx(wtx *WrappedTx) {
 	elt := txmp.txs.PushBack(wtx)
 	txmp.txByKey[wtx.tx.Key()] = elt
 	if s := wtx.sender; s != "" {
@@ -682,42 +669,20 @@ func (txmp *TxMempool) insertTx(wtx *wrappedTx) {
 	}
 	// if we're reinserting an evicted transaction
 	// remove it from the map
-	delete(txmp.evictedTxs, wtx.key)
+	txmp.evictedTxs.Pop(wtx.key)
 
 	atomic.AddInt64(&txmp.txsBytes, wtx.Size())
 }
 
-func (txmp *TxMempool) evictTx(wtx *wrappedTx) {
+func (txmp *TxMempool) evictTx(wtx *WrappedTx) {
 	txmp.removeTxByKey(wtx.key)
 	txmp.metrics.EvictedTxs.Add(1)
-	txmp.cacheEvictedTx(wtx)
+	txmp.evictedTxs.Push(wtx)
 	txmp.logger.Debug(
 		"evicted valid existing transaction; mempool full",
 		"old_tx", fmt.Sprintf("%X", wtx.key),
 		"old_priority", wtx.priority,
 	)
-}
-
-func (txmp *TxMempool) cacheEvictedTx(wtx *wrappedTx) {
-	txmp.evictedTxs[wtx.key] = &evictedTxInfo{
-		timeEvicted: time.Now().UTC(),
-		priority:    wtx.priority,
-		gasWanted:   wtx.gasWanted,
-		sender:      wtx.sender,
-		peers:       wtx.peers,
-	}
-	// if cache too large, remove the oldest entry
-	if len(txmp.evictedTxs) > evictedTxCacheSize {
-		oldestTxKey := wtx.key
-		oldestTxTime := time.Now().UTC()
-		for key, info := range txmp.evictedTxs {
-			if info.timeEvicted.Before(oldestTxTime) {
-				oldestTxTime = info.timeEvicted
-				oldestTxKey = key
-			}
-		}
-		delete(txmp.evictedTxs, oldestTxKey)
-	}
 }
 
 // handleRecheckResult handles the responses from ABCI CheckTx calls issued
@@ -738,7 +703,7 @@ func (txmp *TxMempool) handleRecheckResult(tx types.Tx, checkTxRes *abci.Respons
 	if !ok {
 		return
 	}
-	wtx := elt.Value.(*wrappedTx)
+	wtx := elt.Value.(*WrappedTx)
 
 	// If a postcheck hook is defined, call it before checking the result.
 	var err error
@@ -781,9 +746,9 @@ func (txmp *TxMempool) recheckTransactions() {
 	)
 
 	// Collect transactions currently in the mempool requiring recheck.
-	wtxs := make([]*wrappedTx, 0, txmp.txs.Len())
+	wtxs := make([]*WrappedTx, 0, txmp.txs.Len())
 	for e := txmp.txs.Front(); e != nil; e = e.Next() {
-		wtxs = append(wtxs, e.Value.(*wrappedTx))
+		wtxs = append(wtxs, e.Value.(*WrappedTx))
 	}
 
 	// Issue CheckTx calls for each remaining transaction, and when all the
@@ -818,10 +783,10 @@ func (txmp *TxMempool) recheckTransactions() {
 	}()
 }
 
-// canAddTx returns an error if we cannot insert the provided *wrappedTx into
+// canAddTx returns an error if we cannot insert the provided *WrappedTx into
 // the mempool due to mempool configured constraints. Otherwise, nil is
 // returned and the transaction can be inserted into the mempool.
-func (txmp *TxMempool) canAddTx(wtx *wrappedTx) error {
+func (txmp *TxMempool) canAddTx(wtx *WrappedTx) error {
 	numTxs := txmp.Size()
 	txBytes := txmp.SizeBytes()
 
@@ -854,7 +819,7 @@ func (txmp *TxMempool) purgeExpiredTxs(blockHeight int64) {
 		// will be invalidated.
 		next := cur.Next()
 
-		w := cur.Value.(*wrappedTx)
+		w := cur.Value.(*WrappedTx)
 		if txmp.config.TTLNumBlocks > 0 && (blockHeight-w.height) > txmp.config.TTLNumBlocks {
 			txmp.removeTxByElement(cur)
 			txmp.metrics.EvictedTxs.Add(1)
@@ -867,11 +832,8 @@ func (txmp *TxMempool) purgeExpiredTxs(blockHeight int64) {
 
 	// purge old evicted transactions
 	if txmp.config.TTLDuration > 0 {
-		for key, info := range txmp.evictedTxs {
-			if now.Sub(info.timeEvicted) > txmp.config.TTLDuration {
-				delete(txmp.evictedTxs, key)
-			}
-		}
+		limit := now.Add(-txmp.config.TTLDuration)
+		txmp.evictedTxs.Prune(limit)
 	}
 }
 

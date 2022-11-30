@@ -178,7 +178,7 @@ func (memR *Reactor) ReceiveEnvelope(e p2p.Envelope) {
 				// be non-deterministic, we don't punish the peer but instead just ignore the msg
 				continue
 			}
-			if memR.mempool.WasRecentlyEvicted(key, ntx) {
+			if memR.mempool.WasRecentlyEvicted(key) {
 				// the transaction was recently evicted. If true, we attempt to re-add it to the mempool
 				// skipping check tx.
 				err := memR.mempool.TryReinsertEvictedTx(key, ntx, txInfo.SenderID)
@@ -281,7 +281,7 @@ func (memR *Reactor) broadcastTxRoutine(peer p2p.Peer) {
 		}
 
 		// Allow for a lag of 1 block.
-		memTx := next.Value.(*wrappedTx)
+		memTx := next.Value.(*WrappedTx)
 		if peerState.GetHeight() < memTx.height-1 {
 			time.Sleep(mempool.PeerCatchupSleepIntervalMS * time.Millisecond)
 			continue
