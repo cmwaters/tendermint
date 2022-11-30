@@ -231,11 +231,6 @@ func (txmp *TxMempool) CheckTx(tx types.Tx, cb func(*abci.Response), txInfo memp
 		return mempool.ErrTxTooLarge{Max: txmp.config.MaxTxBytes, Actual: len(tx)}
 	}
 
-	// If a precheck hook is defined, call it before invoking the application.
-	if err := txmp.preCheck(tx); err != nil {
-		return mempool.ErrPreCheck{Reason: err}
-	}
-
 	key := tx.Key()
 
 	if txmp.IsRejectedTx(key) {
@@ -274,6 +269,25 @@ func (txmp *TxMempool) TryAddNewTx(tx types.Tx, key types.TxKey, txInfo mempool.
 		return nil, errors.New("tx already added")
 	}
 
+	resp, err := txmp.tryAddNewTx(tx, key, txInfo)
+	if err != nil {
+		// remove the reservation if adding failed
+		txmp.unreserveTx(key)
+	}
+	return resp, err
+}
+
+func (txmp *TxMempool) tryAddNewTx(tx types.Tx, key types.TxKey, txInfo mempool.TxInfo) (*abci.ResponseCheckTx, error) {
+	// Reject transactions in excess of the configured maximum transaction size.
+	if len(tx) > txmp.config.MaxTxBytes {
+		return nil, mempool.ErrTxTooLarge{Max: txmp.config.MaxTxBytes, Actual: len(tx)}
+	}
+
+	// If a precheck hook is defined, call it before invoking the application.
+	if err := txmp.preCheck(tx); err != nil {
+		return nil, mempool.ErrPreCheck{Reason: err}
+	}
+
 	// Early exit if the proxy connection has an error.
 	if err := txmp.proxyAppConn.Error(); err != nil {
 		txmp.unreserveTx(key)
@@ -283,26 +297,45 @@ func (txmp *TxMempool) TryAddNewTx(tx types.Tx, key types.TxKey, txInfo mempool.
 	// Invoke an ABCI CheckTx for this transaction.
 	rsp, err := txmp.proxyAppConn.CheckTxSync(abci.RequestCheckTx{Tx: tx})
 	if err != nil {
-		txmp.unreserveTx(key)
-		return nil, err
+		return rsp, err
 	}
+	if rsp.Code != abci.CodeTypeOK {
+		txmp.metrics.RejectedTxs.Add(1)
+		return rsp, fmt.Errorf("application rejected transaction with code %d", rsp.Code)
+	}
+
+	// Create wrapped tx
 	wtx := &wrappedTx{
 		tx:        tx,
-		key:       tx.Key(),
+		key:       key,
 		timestamp: time.Now().UTC(),
 		height:    txmp.height,
 		priority:  rsp.Priority,
 		gasWanted: rsp.GasWanted,
 		sender:    rsp.Sender,
-		peers:     map[uint16]bool{txInfo.SenderID: true},
+		peers:     map[uint16]bool{},
 	}
+	if txInfo.SenderID > 0 {
+		wtx.SetPeer(txInfo.SenderID)
+	}
+
+	// Perform the post check
+	err = txmp.postCheck(wtx.tx, rsp)
+	if err != nil {
+		txmp.metrics.RejectedTxs.Add(1)
+		return rsp, fmt.Errorf("rejected bad transaction after post check: %w", err)
+	}
+
+	// Now we consider the transaction to be valid. Once a transaction is valid, it
+	// can only become invalid if recheckTx is enabled and RecheckTx returns a non zero code
 	if err := txmp.addNewTransaction(wtx, rsp); err != nil {
-		txmp.unreserveTx(key)
 		return nil, err
 	}
 	return rsp, nil
 }
 
+// reserveTx adds an empty element for the specified key to prevent
+// a transaction with the same key from being added
 func (txmp *TxMempool) reserveTx(key types.TxKey) bool {
 	txmp.mtx.Lock()
 	defer txmp.mtx.Unlock()
@@ -314,6 +347,8 @@ func (txmp *TxMempool) reserveTx(key types.TxKey) bool {
 	return true
 }
 
+// unreserveTx is called when a pending transaction failed
+// to enter the mempool. The empty element and key is removed.
 func (txmp *TxMempool) unreserveTx(key types.TxKey) {
 	txmp.mtx.Lock()
 	defer txmp.mtx.Unlock()
@@ -377,14 +412,19 @@ func (txmp *TxMempool) Flush() {
 	txmp.rejectedTxCache.Reset()
 }
 
-// PeerHasTx marks that the transaction has been seen by a peer
-func (txmp *TxMempool) PeerHasTx(peer uint16, txKey types.TxKey) {
+// PeerHasTx marks that the transaction has been seen by a peer.
+// It returns true if the mempool has the transaction and has recorded the
+// peer and false if the mempool has not yet seen the transaction that the
+// peer has
+func (txmp *TxMempool) PeerHasTx(peer uint16, txKey types.TxKey) bool {
 	txmp.mtx.RLock()
 	defer txmp.mtx.RUnlock()
-	if el, exists := txmp.txByKey[txKey]; exists {
+	el, exists := txmp.txByKey[txKey]
+	if exists {
 		wtx := el.Value.(*wrappedTx)
 		wtx.SetPeer(peer)
 	}
+	return exists
 }
 
 // allEntriesSorted returns a slice of all the transactions currently in the
@@ -537,12 +577,8 @@ func (txmp *TxMempool) addNewTransaction(wtx *wrappedTx, checkTxRes *abci.Respon
 	txmp.mtx.Lock()
 	defer txmp.mtx.Unlock()
 
-	var err error
-	if txmp.postCheck != nil {
-		err = txmp.postCheck(wtx.tx, checkTxRes)
-	}
-
-	if err != nil || checkTxRes.Code != abci.CodeTypeOK {
+	err := txmp.postCheck(wtx.tx, checkTxRes)
+	if err != nil {
 		txmp.logger.Info(
 			"rejected bad transaction",
 			"priority", wtx.priority,

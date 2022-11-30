@@ -424,13 +424,15 @@ func TestTxMempool_CheckTxExceedsMaxSize(t *testing.T) {
 	_, err := rng.Read(tx)
 	require.NoError(t, err)
 
-	require.Error(t, txmp.CheckTx(tx, nil, mempool.TxInfo{SenderID: 0}))
+	err = txmp.CheckTx(tx, nil, mempool.TxInfo{SenderID: 0})
+	require.Equal(t, mempool.ErrTxTooLarge{Max: txmp.config.MaxTxBytes, Actual: len(tx)}, err)
 
 	tx = make([]byte, txmp.config.MaxTxBytes-1)
 	_, err = rng.Read(tx)
 	require.NoError(t, err)
 
-	require.NoError(t, txmp.CheckTx(tx, nil, mempool.TxInfo{SenderID: 0}))
+	err = txmp.CheckTx(tx, nil, mempool.TxInfo{SenderID: 0})
+	require.NotEqual(t, mempool.ErrTxTooLarge{Max: txmp.config.MaxTxBytes, Actual: len(tx)}, err)
 }
 
 func TestTxMempool_CheckTxSamePeer(t *testing.T) {
@@ -627,11 +629,9 @@ func TestTxMempool_CheckTxPostCheckError(t *testing.T) {
 				return testCase.err
 			}
 			txmp := setup(t, 0, WithPostCheck(postCheckFn))
-			rng := rand.New(rand.NewSource(time.Now().UnixNano()))
-			tx := make([]byte, txmp.config.MaxTxBytes-1)
-			_, err := rng.Read(tx)
-			require.NoError(t, err)
-			require.Equal(t, testCase.err, txmp.CheckTx(tx, nil, mempool.TxInfo{SenderID: 0}))
+			tx := []byte("sender=0000=1")
+			err := txmp.CheckTx(tx, nil, mempool.TxInfo{SenderID: 0})
+			require.True(t, errors.Is(err, testCase.err))
 		})
 	}
 }

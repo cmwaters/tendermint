@@ -2,6 +2,7 @@ package v2
 
 import (
 	"container/list"
+	"time"
 
 	tmsync "github.com/tendermint/tendermint/libs/sync"
 	"github.com/tendermint/tendermint/types"
@@ -89,4 +90,12 @@ func (c *LRUTxCache) Has(txKey types.TxKey) bool {
 
 	_, ok := c.cacheMap[txKey]
 	return ok
+}
+
+type evictedTxInfo struct {
+	timeEvicted time.Time
+	priority    int64
+	gasWanted   int64
+	sender      string
+	peers       map[uint16]bool
 }

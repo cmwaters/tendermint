@@ -37,11 +37,3 @@ func (w *wrappedTx) HasPeer(id uint16) bool {
 	_, ok := w.peers[id]
 	return ok
 }
-
-type evictedTxInfo struct {
-	timeEvicted time.Time
-	priority    int64
-	gasWanted   int64
-	sender      string
-	peers       map[uint16]bool
-}
