@@ -143,6 +143,7 @@ func (memR *Reactor) GetChannels() []*p2p.ChannelDescriptor {
 // It starts a broadcast routine ensuring all txs are forwarded to the given peer.
 func (memR *Reactor) AddPeer(peer p2p.Peer) {
 	if memR.config.Broadcast {
+		memR.sendAllTxKeys(peer)
 		go memR.broadcastTxRoutine(peer)
 	}
 }
@@ -187,7 +188,7 @@ func (memR *Reactor) ReceiveEnvelope(e p2p.Envelope) {
 				}
 				continue
 			}
-			if memR.mempool.SeenTx(key) {
+			if memR.mempool.Has(key) {
 				// We have already received this transaction. We mark the peer that send the message
 				// as already seeing the transaction as well and then we finish
 				memR.mempool.PeerHasTx(txInfo.SenderID, key)
@@ -323,6 +324,19 @@ func (memR *Reactor) broadcastSeenTx(txKey types.TxKey) {
 		ChannelID: mempool.MempoolChannel,
 		Message:   &protomem.SeenTx{TxKey: txKey[:]},
 	})
+}
+
+// sendAllTxKeys loops through all txs currently in the mempool and iteratively
+// sends a `SeenTx` message to the peer. This is added to a queue and will block
+// when the queue becomes full.
+func (memR *Reactor) sendAllTxKeys(peer p2p.Peer) {
+	txKeys := memR.mempool.GetAllTxKeys()
+	for _, txKey := range txKeys {
+		p2p.SendEnvelopeShim(peer, p2p.Envelope{ //nolint: staticcheck
+			ChannelID: mempool.MempoolChannel,
+			Message:   &protomem.SeenTx{TxKey: txKey[:]},
+		}, memR.Logger)
+	}
 }
 
 //-----------------------------------------------------------------------------

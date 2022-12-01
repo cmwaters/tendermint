@@ -643,7 +643,7 @@ func TestSeenTx(t *testing.T) {
 	// now add the transaction
 	err := txmp.CheckTx(tx, nil, mempool.TxInfo{SenderID: 3})
 	require.NoError(t, err)
-	require.True(t, txmp.SeenTx(tx.Key()))
+	require.True(t, txmp.Has(tx.Key()))
 
 	txmp.Lock()
 	el := txmp.txByKey[tx.Key()]

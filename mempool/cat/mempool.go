@@ -24,7 +24,7 @@ var _ mempool.Mempool = (*TxMempool)(nil)
 
 const (
 	evictedTxCacheSize = 100
-	seenByPeerSetSize  = 100
+	seenByPeerSetSize  = 200
 )
 
 // TxMempoolOption sets an optional parameter on the TxMempool.
@@ -169,15 +169,27 @@ func (txmp *TxMempool) EnableTxsAvailable() {
 // when transactions are available in the mempool. It is thread-safe.
 func (txmp *TxMempool) TxsAvailable() <-chan struct{} { return txmp.txsAvailable }
 
-func (txmp *TxMempool) SeenTx(txKey types.TxKey) bool {
+func (txmp *TxMempool) Has(txKey types.TxKey) bool {
 	txmp.mtx.RLock()
 	defer txmp.mtx.RUnlock()
-	return txmp.seenTx(txKey)
+	return txmp.has(txKey)
 }
 
-func (txmp *TxMempool) seenTx(txKey types.TxKey) bool {
+func (txmp *TxMempool) has(txKey types.TxKey) bool {
 	_, exists := txmp.txByKey[txKey]
 	return exists
+}
+
+func (txmp *TxMempool) GetAllTxKeys() []types.TxKey {
+	txmp.mtx.RLock()
+	defer txmp.mtx.RUnlock()
+	keys := make([]types.TxKey, len(txmp.txByKey))
+	idx := 0
+	for key := range txmp.txByKey {
+		keys[idx] = key
+		idx++
+	}
+	return keys
 }
 
 func (txmp *TxMempool) IsRejectedTx(txKey types.TxKey) bool {
