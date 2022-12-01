@@ -67,9 +67,8 @@ type TxMempool struct {
 	seenByPeersSet *SeenTxSet
 
 	// Synchronized fields, protected by mtx.
-	mtx        *sync.RWMutex
-	txByKey    map[types.TxKey]*clist.CElement // used as a lookup table
-	txBySender map[string]*clist.CElement      // for sender != ""
+	mtx     *sync.RWMutex
+	txByKey map[types.TxKey]*clist.CElement // used as a lookup table
 }
 
 // NewTxMempool constructs a new, empty priority mempool at the specified
@@ -94,7 +93,6 @@ func NewTxMempool(
 		mtx:             new(sync.RWMutex),
 		height:          height,
 		txByKey:         make(map[types.TxKey]*clist.CElement),
-		txBySender:      make(map[string]*clist.CElement),
 		preCheck:        func(_ types.Tx) error { return nil },
 		postCheck:       func(_ types.Tx, _ *abci.ResponseCheckTx) error { return nil },
 	}
@@ -362,7 +360,6 @@ func (txmp *TxMempool) removeTxByKey(key types.TxKey) error {
 	if elt, ok := txmp.txByKey[key]; ok {
 		w := elt.Value.(*WrappedTx)
 		delete(txmp.txByKey, key)
-		delete(txmp.txBySender, w.sender)
 		txmp.txs.Remove(elt)
 		elt.DetachPrev()
 		elt.DetachNext()
@@ -377,7 +374,6 @@ func (txmp *TxMempool) removeTxByKey(key types.TxKey) error {
 func (txmp *TxMempool) removeTxByElement(elt *clist.CElement) {
 	w := elt.Value.(*WrappedTx)
 	delete(txmp.txByKey, w.tx.Key())
-	delete(txmp.txBySender, w.sender)
 	txmp.txs.Remove(elt)
 	elt.DetachPrev()
 	elt.DetachNext()
@@ -657,9 +653,6 @@ func (txmp *TxMempool) addNewTransaction(wtx *WrappedTx, checkTxRes *abci.Respon
 func (txmp *TxMempool) insertTx(wtx *WrappedTx) {
 	elt := txmp.txs.PushBack(wtx)
 	txmp.txByKey[wtx.tx.Key()] = elt
-	if s := wtx.sender; s != "" {
-		txmp.txBySender[s] = elt
-	}
 	// if we're reinserting an evicted transaction
 	// remove it from the map
 	txmp.evictedTxs.Pop(wtx.key)
