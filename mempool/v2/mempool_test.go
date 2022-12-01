@@ -96,13 +96,7 @@ func setup(t testing.TB, cacheSize int, options ...TxMempoolOption) *TxMempool {
 // mustCheckTx invokes txmp.CheckTx for the given transaction and waits until
 // its callback has finished executing. It fails t if CheckTx fails.
 func mustCheckTx(t *testing.T, txmp *TxMempool, spec string) {
-	done := make(chan struct{})
-	if err := txmp.CheckTx([]byte(spec), func(*abci.Response) {
-		close(done)
-	}, mempool.TxInfo{}); err != nil {
-		t.Fatalf("CheckTx for %q failed: %v", spec, err)
-	}
-	<-done
+	require.NoError(t, txmp.CheckTx([]byte(spec), nil, mempool.TxInfo{}))
 }
 
 func checkTxs(t *testing.T, txmp *TxMempool, numTxs int, peerID uint16) []testTx {
@@ -285,6 +279,13 @@ func TestTxMempool_Eviction(t *testing.T) {
 	require.False(t, txExists("key3=0002=10"))
 	require.False(t, txExists("key9=0008=9"))
 	require.False(t, txExists("key7=0006=7"))
+
+	// Free up some space so we can add back previously evicted txs
+	err = txmp.Update(1, types.Txs{types.Tx("key10=0123456789abcdef=11")}, []*abci.ResponseDeliverTx{{Code: abci.CodeTypeOK}}, nil, nil)
+	require.NoError(t, err)
+	require.False(t, txExists("key10=0123456789abcdef=11"))
+	mustCheckTx(t, txmp, "key3=0002=10")
+	require.True(t, txExists("key3=0002=10"))
 }
 
 func TestTxMempool_Flush(t *testing.T) {
@@ -629,4 +630,59 @@ func TestTxMempool_CheckTxPostCheckError(t *testing.T) {
 			require.True(t, errors.Is(err, testCase.err))
 		})
 	}
+}
+
+func TestSeenTx(t *testing.T) {
+	txmp := setup(t, 500)
+	tx := types.Tx("sender=0000=1")
+
+	// mark a few peers as already having seen a tx
+	txmp.PeerHasTx(1, tx.Key())
+	txmp.PeerHasTx(2, tx.Key())
+
+	// now add the transaction
+	err := txmp.CheckTx(tx, nil, mempool.TxInfo{SenderID: 3})
+	require.NoError(t, err)
+	require.True(t, txmp.SeenTx(tx.Key()))
+
+	txmp.Lock()
+	el := txmp.txByKey[tx.Key()]
+	txmp.Unlock()
+
+	wtx := el.Value.(*WrappedTx)
+	require.True(t, wtx.peers[1])
+	require.True(t, wtx.peers[2])
+	require.True(t, wtx.peers[3])
+}
+
+func TestConcurrentlyAddingTx(t *testing.T) {
+	txmp := setup(t, 500)
+	tx := types.Tx("sender=0000=1")
+
+	numTxs := 10
+	errCh := make(chan error, numTxs)
+	wg := &sync.WaitGroup{}
+	for i := 0; i < numTxs; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := txmp.TryAddNewTx(tx, tx.Key(), mempool.TxInfo{})
+			errCh <- err
+		}()
+	}
+	go func() {
+		wg.Wait()
+		close(errCh)
+	}()
+
+	errCount := 0
+	expErr := errors.New("tx already added")
+	for err := range errCh {
+		fmt.Println("received error")
+		if err != nil {
+			require.Equal(t, expErr, err)
+			errCount++
+		}
+	}
+	require.Equal(t, numTxs-1, errCount)
 }

@@ -195,6 +195,7 @@ func (txmp *TxMempool) TryReinsertEvictedTx(txKey types.TxKey, tx types.Tx, peer
 	if info == nil {
 		return nil
 	}
+	txmp.logger.Debug("attempting to reinsert evicted tx", "txKey", fmt.Sprintf("%X", txKey))
 	wtx := NewWrappedTx(
 		tx, txKey, txmp.height, info.gasWanted, info.priority, info.sender,
 	)
@@ -236,12 +237,12 @@ func (txmp *TxMempool) CheckTx(tx types.Tx, cb func(*abci.Response), txInfo memp
 	if txmp.WasRecentlyEvicted(key) {
 		// the transaction was recently evicted. If true, we attempt to re-add it to the mempool
 		// skipping check tx.
-		return nil
+		return txmp.TryReinsertEvictedTx(key, tx, txInfo.SenderID)
 	}
 
 	// This is a new transaction that we haven't seen before. Verify it against the app and attempt
 	// to add it to the transaction pool.
-	rsp, err := txmp.TryAddNewTx(tx, tx.Key(), txInfo)
+	rsp, err := txmp.TryAddNewTx(tx, key, txInfo)
 	if err != nil {
 		return err
 	}
@@ -260,6 +261,8 @@ func (txmp *TxMempool) CheckTx(tx types.Tx, cb func(*abci.Response), txInfo memp
 func (txmp *TxMempool) TryAddNewTx(tx types.Tx, key types.TxKey, txInfo mempool.TxInfo) (*abci.ResponseCheckTx, error) {
 	// reserve the key
 	if !txmp.reserveTx(key) {
+		txmp.logger.Debug("mempool already attempting to verify and add transaction", "txKey", fmt.Sprintf("%X", key))
+		txmp.PeerHasTx(txInfo.SenderID, key)
 		return nil, errors.New("tx already added")
 	}
 
@@ -284,7 +287,6 @@ func (txmp *TxMempool) tryAddNewTx(tx types.Tx, key types.TxKey, txInfo mempool.
 
 	// Early exit if the proxy connection has an error.
 	if err := txmp.proxyAppConn.Error(); err != nil {
-		txmp.unreserveTx(key)
 		return nil, err
 	}
 
@@ -404,6 +406,10 @@ func (txmp *TxMempool) Flush() {
 // peer and false if the mempool has not yet seen the transaction that the
 // peer has
 func (txmp *TxMempool) PeerHasTx(peer uint16, txKey types.TxKey) {
+	// peer must be non-zero
+	if peer == 0 {
+		return
+	}
 	txmp.mtx.RLock()
 	defer txmp.mtx.RUnlock()
 	el, exists := txmp.txByKey[txKey]
@@ -564,27 +570,6 @@ func (txmp *TxMempool) Update(
 func (txmp *TxMempool) addNewTransaction(wtx *WrappedTx, checkTxRes *abci.ResponseCheckTx) error {
 	txmp.mtx.Lock()
 	defer txmp.mtx.Unlock()
-
-	err := txmp.postCheck(wtx.tx, checkTxRes)
-	if err != nil {
-		txmp.logger.Info(
-			"rejected bad transaction",
-			"priority", wtx.priority,
-			"tx", fmt.Sprintf("%X", wtx.tx.Hash()),
-			"peer_id", wtx.peers,
-			"code", checkTxRes.Code,
-			"post_check_err", err,
-		)
-
-		txmp.metrics.RejectedTxs.Add(1)
-
-		// If there was a post-check error, record its text in the result for
-		// debugging purposes.
-		if err != nil {
-			checkTxRes.MempoolError = err.Error()
-		}
-		return err
-	}
 
 	// At this point the application has ruled the transaction valid, but the
 	// mempool might be full. If so, find the lowest-priority items with lower
