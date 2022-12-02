@@ -42,7 +42,9 @@ A `SeenTx` is broadcasted to ALL nodes upon receiving a "new" transaction from a
 - The node did not recently reject the transacton (subject to the size of the cache)
 - The node did not recently evict the transaction (subject to the size of the cache)
 
-A `SeenTx` MAY be sent for each transaction currently in the transaction pool when a connection with a peer is first established.
+Given this criteria, it is feasible, yet unlikely that a node receives two `SeenTx` messages from the same peer for the same transaction.
+
+A `SeenTx` MAY be sent for each transaction currently in the transaction pool when a connection with a peer is first established. This acts as a mechanism for syncing pool state across peers.
 
 The `SeenTx` message SHOULD be broadcasted before either validation or storage. It is important that the `SeenTx` be delivered to connected peers as soon as possible to decrease the likelihood of duplicate transmission. Given this, it is possible that a `SeenTx` is sent for a transaction that is rejected by the node. This is acceptable given that `CheckTx` is non-deterministic (one node may reject a transaction that another node does not).
 
@@ -54,7 +56,7 @@ Upon receiving a `SeenTx` message:
 
 - If the node has the transaction in its pool, it will mark that the peer has seen the transaction and MUST not broadcast that transaction to that peer.
 - If the node has recently rejected that transaction, it SHOULD ignore the message
-- If the node has not seen the transaction, it MAY cache the message and process it if the corresponding transaction is received.
+- If the node has not seen the transaction or has recently evicted it, it MAY cache the message and process it if the corresponding transaction is received.
 
 ### Gossip
 
@@ -80,4 +82,4 @@ ALL caches SHOULD be bounded in size.
 
 CAT has Go API compatibility with the existing two mempool implementations. It implements both the `Reactor` interface required by Tendermint's P2P layer and the `Mempool` interface used by `consensus` and `rpc`. CAT is not currently network compatible with existing implementations as the new message type will be unknown to other nodes causing them to drop the connection.
 
-> NOTE: p2p compatibility can be solved by implementing the message type on a different channel which is simply ignored by nodes that don't support it.
+> NOTE: p2p compatibility can be solved by implementing the message type on a different channel which is simply ignored by nodes that don't support it. This may actually be preferable as a different channel allows for a different priority.
