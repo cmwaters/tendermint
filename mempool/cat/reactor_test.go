@@ -10,16 +10,19 @@ import (
 	"github.com/go-kit/log/term"
 	"github.com/gogo/protobuf/proto"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
 	"github.com/tendermint/tendermint/abci/example/kvstore"
-	"github.com/tendermint/tendermint/p2p/mock"
+	"github.com/tendermint/tendermint/crypto/ed25519"
+	p2pmock "github.com/tendermint/tendermint/p2p/mock"
 
 	cfg "github.com/tendermint/tendermint/config"
 
 	"github.com/tendermint/tendermint/libs/log"
 	"github.com/tendermint/tendermint/mempool"
 	"github.com/tendermint/tendermint/p2p"
+	"github.com/tendermint/tendermint/p2p/mocks"
 	memproto "github.com/tendermint/tendermint/proto/tendermint/mempool"
 	"github.com/tendermint/tendermint/proxy"
 	"github.com/tendermint/tendermint/types"
@@ -70,6 +73,40 @@ func TestReactorBroadcastTxsMessage(t *testing.T) {
 	waitForTxsOnReactors(t, transactions, reactors)
 }
 
+func TestReactorSendSeenTxOnConnection(t *testing.T) {
+	app := kvstore.NewApplication()
+	cc := proxy.NewLocalClientCreator(app)
+	pool, cleanup := newMempoolWithApp(cc)
+	t.Cleanup(cleanup)
+	reactor := NewReactor(cfg.TestConfig().Mempool, pool)
+
+	tx1 := types.Tx("hello")
+	key1 := tx1.Key()
+	msg1 := &memproto.SeenTx{TxKey: key1[:]}
+	msgBytes1, err := proto.Marshal(msg1.Wrap())
+	require.NoError(t, err)
+	tx2 := types.Tx("world")
+	key2 := tx2.Key()
+	msg2 := &memproto.SeenTx{TxKey: key2[:]}
+	msgBytes2, err := proto.Marshal(msg2.Wrap())
+	require.NoError(t, err)
+
+	peer := &mocks.Peer{}
+	nodeKey := p2p.NodeKey{PrivKey: ed25519.GenPrivKey()}
+	peer.On("ID").Return(nodeKey.ID())
+	peer.On("SendEnvelope", mempool.MempoolChannel, msgBytes1).Return(true)
+	peer.On("SendEnvelope", mempool.MempoolChannel, msgBytes2).Return(true)
+	peer.On("SendEnvelope", mempool.MempoolChannel, mock.AnythingOfType("[]byte")).Maybe()
+
+	pool.CheckTx(tx1, nil, mempool.TxInfo{})
+	pool.CheckTx(tx2, nil, mempool.TxInfo{})
+
+	reactor.InitPeer(peer)
+	reactor.AddPeer(peer)
+
+	peer.AssertExpectations(t)
+}
+
 func TestMempoolVectors(t *testing.T) {
 	testCases := []struct {
 		testName string
@@ -105,7 +142,7 @@ func TestLegacyReactorReceiveBasic(t *testing.T) {
 	reactors := makeAndConnectReactors(config, N)
 	var (
 		reactor = reactors[0]
-		peer    = mock.NewPeer(nil)
+		peer    = p2pmock.NewPeer(nil)
 	)
 	defer func() {
 		err := reactor.Stop()

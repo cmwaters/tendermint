@@ -209,7 +209,9 @@ func (txmp *TxMempool) TryReinsertEvictedTx(txKey types.TxKey, tx types.Tx, peer
 	wtx := NewWrappedTx(
 		tx, txKey, txmp.height, info.gasWanted, info.priority, info.sender,
 	)
-	wtx.peers = info.peers
+	for p := range info.peers {
+		wtx.SetPeer(p)
+	}
 	wtx.SetPeer(peer)
 	checkTxResp := &abci.ResponseCheckTx{
 		Code:      abci.CodeTypeOK,

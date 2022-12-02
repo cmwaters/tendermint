@@ -734,7 +734,7 @@ type MempoolConfig struct {
 // DefaultMempoolConfig returns a default configuration for the Tendermint mempool
 func DefaultMempoolConfig() *MempoolConfig {
 	return &MempoolConfig{
-		Version:   MempoolV0,
+		Version:   MempoolV2,
 		Recheck:   true,
 		Broadcast: true,
 		WalPath:   "",
