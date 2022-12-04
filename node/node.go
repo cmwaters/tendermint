@@ -375,7 +375,7 @@ func createMempoolAndMempoolReactor(
 ) (mempl.Mempool, p2p.Reactor) {
 	switch config.Mempool.Version {
 	case cfg.MempoolV2:
-		mp := mempoolv2.NewTxMempool(
+		mp := mempoolv2.NewTxPool(
 			logger,
 			config.Mempool,
 			proxyApp.Mempool(),

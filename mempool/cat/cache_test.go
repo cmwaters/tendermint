@@ -1,4 +1,4 @@
-package cat_test
+package cat
 
 import (
 	"math/rand"
@@ -7,7 +7,6 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/tendermint/tendermint/mempool/cat"
 	"github.com/tendermint/tendermint/types"
 )
 
@@ -20,7 +19,7 @@ func TestSeenTxSet(t *testing.T) {
 		peer2  uint16 = 2
 	)
 
-	seenSet := cat.NewSeenTxSet(2)
+	seenSet := NewSeenTxSet(2)
 	require.Nil(t, seenSet.Pop(tx1Key))
 
 	seenSet.Add(tx1Key, peer1)
@@ -36,7 +35,7 @@ func TestSeenTxSet(t *testing.T) {
 }
 
 func TestCacheRemove(t *testing.T) {
-	cache := cat.NewLRUTxCache(100)
+	cache := NewLRUTxCache(100)
 	numTxs := 10
 
 	txs := make([][32]byte, numTxs)
@@ -65,18 +64,18 @@ func TestEvictedTxCache(t *testing.T) {
 		tx1  = types.Tx("tx1")
 		tx2  = types.Tx("tx2")
 		tx3  = types.Tx("tx3")
-		wtx1 = cat.NewWrappedTx(
+		wtx1 = newWrappedTx(
 			tx1, tx1.Key(), 10, 1, 5, "",
 		)
-		wtx2 = cat.NewWrappedTx(
+		wtx2 = newWrappedTx(
 			tx2, tx2.Key(), 10, 1, 5, "",
 		)
-		wtx3 = cat.NewWrappedTx(
+		wtx3 = newWrappedTx(
 			tx3, tx3.Key(), 10, 1, 5, "",
 		)
 	)
 
-	cache := cat.NewEvictedTxCache(2)
+	cache := NewEvictedTxCache(2)
 	require.False(t, cache.Has(tx1.Key()))
 	require.Nil(t, cache.Pop(tx1.Key()))
 	cache.Push(wtx1)

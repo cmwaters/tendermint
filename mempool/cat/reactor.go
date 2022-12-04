@@ -2,18 +2,21 @@ package cat
 
 import (
 	"fmt"
-	"time"
 
 	"github.com/gogo/protobuf/proto"
 
 	cfg "github.com/tendermint/tendermint/config"
-	"github.com/tendermint/tendermint/libs/clist"
+	"github.com/tendermint/tendermint/crypto/tmhash"
 	"github.com/tendermint/tendermint/libs/log"
-	tmsync "github.com/tendermint/tendermint/libs/sync"
 	"github.com/tendermint/tendermint/mempool"
 	"github.com/tendermint/tendermint/p2p"
 	protomem "github.com/tendermint/tendermint/proto/tendermint/mempool"
 	"github.com/tendermint/tendermint/types"
+)
+
+const (
+	maxStateChannelSize = tmhash.Size + tmhash.TruncatedSize + 10 // tx_key + node_id + buffer (for proto encoding)
+	MempoolStateChannel = byte(0x31)
 )
 
 // Reactor handles mempool tx broadcasting amongst peers.
@@ -22,75 +25,12 @@ import (
 type Reactor struct {
 	p2p.BaseReactor
 	config  *cfg.MempoolConfig
-	mempool *TxMempool
+	mempool *TxPool
 	ids     *mempoolIDs
 }
 
-type mempoolIDs struct {
-	mtx       tmsync.RWMutex
-	peerMap   map[p2p.ID]uint16
-	nextID    uint16              // assumes that a node will never have over 65536 active peers
-	activeIDs map[uint16]struct{} // used to check if a given peerID key is used, the value doesn't matter
-}
-
-// Reserve searches for the next unused ID and assigns it to the
-// peer.
-func (ids *mempoolIDs) ReserveForPeer(peer p2p.Peer) {
-	ids.mtx.Lock()
-	defer ids.mtx.Unlock()
-
-	curID := ids.nextPeerID()
-	ids.peerMap[peer.ID()] = curID
-	ids.activeIDs[curID] = struct{}{}
-}
-
-// nextPeerID returns the next unused peer ID to use.
-// This assumes that ids's mutex is already locked.
-func (ids *mempoolIDs) nextPeerID() uint16 {
-	if len(ids.activeIDs) == mempool.MaxActiveIDs {
-		panic(fmt.Sprintf("node has maximum %d active IDs and wanted to get one more", mempool.MaxActiveIDs))
-	}
-
-	_, idExists := ids.activeIDs[ids.nextID]
-	for idExists {
-		ids.nextID++
-		_, idExists = ids.activeIDs[ids.nextID]
-	}
-	curID := ids.nextID
-	ids.nextID++
-	return curID
-}
-
-// Reclaim returns the ID reserved for the peer back to unused pool.
-func (ids *mempoolIDs) Reclaim(peer p2p.Peer) {
-	ids.mtx.Lock()
-	defer ids.mtx.Unlock()
-
-	removedID, ok := ids.peerMap[peer.ID()]
-	if ok {
-		delete(ids.activeIDs, removedID)
-		delete(ids.peerMap, peer.ID())
-	}
-}
-
-// GetForPeer returns an ID reserved for the peer.
-func (ids *mempoolIDs) GetForPeer(peer p2p.Peer) uint16 {
-	ids.mtx.RLock()
-	defer ids.mtx.RUnlock()
-
-	return ids.peerMap[peer.ID()]
-}
-
-func newMempoolIDs() *mempoolIDs {
-	return &mempoolIDs{
-		peerMap:   make(map[p2p.ID]uint16),
-		activeIDs: map[uint16]struct{}{0: {}},
-		nextID:    1, // reserve unknownPeerID(0) for mempoolReactor.BroadcastTx
-	}
-}
-
 // NewReactor returns a new Reactor with the given config and mempool.
-func NewReactor(config *cfg.MempoolConfig, mempool *TxMempool) *Reactor {
+func NewReactor(config *cfg.MempoolConfig, mempool *TxPool) *Reactor {
 	memR := &Reactor{
 		config:  config,
 		mempool: mempool,
@@ -116,6 +56,18 @@ func (memR *Reactor) OnStart() error {
 	if !memR.config.Broadcast {
 		memR.Logger.Info("Tx broadcasting is disabled")
 	}
+	go func() {
+		for {
+			select {
+			case <-memR.Quit():
+				return
+
+			// any newly verified tx via RFC, we immediately broadcast to everyone
+			case tx := <-memR.mempool.outboundTxs:
+				memR.broadcastNewTx(tx)
+			}
+		}
+	}()
 	return nil
 }
 
@@ -132,8 +84,14 @@ func (memR *Reactor) GetChannels() []*p2p.ChannelDescriptor {
 	return []*p2p.ChannelDescriptor{
 		{
 			ID:                  mempool.MempoolChannel,
-			Priority:            5,
+			Priority:            6,
 			RecvMessageCapacity: batchMsg.Size(),
+			MessageType:         &protomem.Message{},
+		},
+		{
+			ID:                  MempoolStateChannel,
+			Priority:            5,
+			RecvMessageCapacity: maxStateChannelSize,
 			MessageType:         &protomem.Message{},
 		},
 	}
@@ -144,7 +102,6 @@ func (memR *Reactor) GetChannels() []*p2p.ChannelDescriptor {
 func (memR *Reactor) AddPeer(peer p2p.Peer) {
 	if memR.config.Broadcast {
 		memR.sendAllTxKeys(peer)
-		go memR.broadcastTxRoutine(peer)
 	}
 }
 
@@ -189,7 +146,7 @@ func (memR *Reactor) ReceiveEnvelope(e p2p.Envelope) {
 				continue
 			}
 			if memR.mempool.Has(key) {
-				// We have already received this transaction. We mark the peer that send the message
+				// We have already received this transaction. We mark the peer that sent the message
 				// as already seeing the transaction as well and then we finish
 				memR.mempool.PeerHasTx(txInfo.SenderID, key)
 				continue
@@ -240,89 +197,19 @@ type PeerState interface {
 	GetHeight() int64
 }
 
-// Send new mempool txs to peer.
-func (memR *Reactor) broadcastTxRoutine(peer p2p.Peer) {
-	peerID := memR.ids.GetForPeer(peer)
-	var next *clist.CElement
-
-	for {
-		// In case of both next.NextWaitChan() and peer.Quit() are variable at the same time
-		if !memR.IsRunning() || !peer.IsRunning() {
-			return
-		}
-
-		// This happens because the CElement we were looking at got garbage
-		// collected (removed). That is, .NextWait() returned nil. Go ahead and
-		// start from the beginning.
-		if next == nil {
-			select {
-			case <-memR.mempool.TxsWaitChan(): // Wait until a tx is available
-				if next = memR.mempool.TxsFront(); next == nil {
-					continue
-				}
-
-			case <-peer.Quit():
-				return
-
-			case <-memR.Quit():
-				return
-			}
-		}
-
-		// Make sure the peer is up to date.
-		peerState, ok := peer.Get(types.PeerStateKey).(PeerState)
-		if !ok {
-			// Peer does not have a state yet. We set it in the consensus reactor, but
-			// when we add peer in Switch, the order we call reactors#AddPeer is
-			// different every time due to us using a map. Sometimes other reactors
-			// will be initialized before the consensus reactor. We should wait a few
-			// milliseconds and retry.
-			time.Sleep(mempool.PeerCatchupSleepIntervalMS * time.Millisecond)
-			continue
-		}
-
-		// Allow for a lag of 1 block.
-		memTx := next.Value.(*WrappedTx)
-		if peerState.GetHeight() < memTx.height-1 {
-			time.Sleep(mempool.PeerCatchupSleepIntervalMS * time.Millisecond)
-			continue
-		}
-
-		// NOTE: Transaction batching was disabled due to
-		// https://github.com/tendermint/tendermint/issues/5796
-		if !memTx.HasPeer(peerID) {
-			success := p2p.SendEnvelopeShim(peer, p2p.Envelope{ //nolint: staticcheck
-				ChannelID: mempool.MempoolChannel,
-				Message:   &protomem.Txs{Txs: [][]byte{memTx.tx}},
-			}, memR.Logger)
-			if !success {
-				time.Sleep(mempool.PeerCatchupSleepIntervalMS * time.Millisecond)
-				continue
-			}
-		}
-
-		select {
-		case <-next.NextWaitChan():
-			// see the start of the for loop for nil check
-			next = next.Next()
-
-		case <-peer.Quit():
-			return
-
-		case <-memR.Quit():
-			return
-		}
-	}
+func (memR *Reactor) broadcastSeenTx(txKey types.TxKey) {
+	memR.Logger.Debug("broadcasting seen tx", "tx_key", txKey)
+	memR.Switch.BroadcastEnvelope(p2p.Envelope{
+		ChannelID: MempoolStateChannel,
+		Message:   &protomem.SeenTx{TxKey: txKey[:]},
+	})
 }
 
-func (memR *Reactor) broadcastSeenTx(txKey types.TxKey) {
-	memR.Logger.Debug(
-		"broadcasting seen tx",
-		"tx_key", txKey,
-	)
+func (memR *Reactor) broadcastNewTx(tx types.Tx) {
+	memR.Logger.Debug("broadcasting new tx to all peers")
 	memR.Switch.BroadcastEnvelope(p2p.Envelope{
 		ChannelID: mempool.MempoolChannel,
-		Message:   &protomem.SeenTx{TxKey: txKey[:]},
+		Message:   &protomem.Txs{Txs: [][]byte{tx}},
 	})
 }
 
@@ -330,24 +217,11 @@ func (memR *Reactor) broadcastSeenTx(txKey types.TxKey) {
 // sends a `SeenTx` message to the peer. This is added to a queue and will block
 // when the queue becomes full.
 func (memR *Reactor) sendAllTxKeys(peer p2p.Peer) {
-	txKeys := memR.mempool.GetAllTxKeys()
+	txKeys := memR.mempool.store.getAllKeys()
 	for _, txKey := range txKeys {
 		p2p.SendEnvelopeShim(peer, p2p.Envelope{ //nolint: staticcheck
 			ChannelID: mempool.MempoolChannel,
 			Message:   &protomem.SeenTx{TxKey: txKey[:]},
 		}, memR.Logger)
 	}
-}
-
-//-----------------------------------------------------------------------------
-// Messages
-
-// TxsMessage is a Message containing transactions.
-type TxsMessage struct {
-	Txs []types.Tx
-}
-
-// String returns a string representation of the TxsMessage.
-func (m *TxsMessage) String() string {
-	return fmt.Sprintf("[TxsMessage %v]", m.Txs)
 }

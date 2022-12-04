@@ -120,7 +120,7 @@ func (c *EvictedTxCache) Has(txKey types.TxKey) bool {
 	return exists
 }
 
-func (c *EvictedTxCache) Push(wtx *WrappedTx) {
+func (c *EvictedTxCache) Push(wtx *wrappedTx) {
 	c.mtx.Lock()
 	defer c.mtx.Unlock()
 	c.cache[wtx.key] = &EvictedTxInfo{
@@ -164,6 +164,12 @@ func (c *EvictedTxCache) Prune(limit time.Time) {
 			delete(c.cache, key)
 		}
 	}
+}
+
+func (c *EvictedTxCache) Reset() {
+	c.mtx.Lock()
+	defer c.mtx.Unlock()
+	c.cache = make(map[types.TxKey]*EvictedTxInfo)
 }
 
 // seenTxSet records transactions that have been
@@ -234,4 +240,10 @@ func (s *SeenTxSet) Len() int {
 	s.mtx.Lock()
 	defer s.mtx.Unlock()
 	return len(s.set)
+}
+
+func (s *SeenTxSet) Reset() {
+	s.mtx.Lock()
+	defer s.mtx.Unlock()
+	s.set = make(map[types.TxKey]timestampedPeerSet)
 }

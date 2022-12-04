@@ -10,7 +10,7 @@ import (
 // wrappedTx defines a wrapper around a raw transaction with additional metadata
 // that is used for indexing. With the exception of the map of peers who have
 // seen this transaction, this struct should never be modified
-type WrappedTx struct {
+type wrappedTx struct {
 	// these fields are immutable
 	tx        types.Tx    // the original transaction data
 	key       types.TxKey // the transaction hash
@@ -24,8 +24,8 @@ type WrappedTx struct {
 	peers map[uint16]bool // peer IDs who have sent us this transaction
 }
 
-func NewWrappedTx(tx types.Tx, key types.TxKey, height, gasWanted, priority int64, sender string) *WrappedTx {
-	return &WrappedTx{
+func newWrappedTx(tx types.Tx, key types.TxKey, height, gasWanted, priority int64, sender string) *wrappedTx {
+	return &wrappedTx{
 		tx:        tx,
 		key:       key,
 		height:    height,
@@ -38,10 +38,10 @@ func NewWrappedTx(tx types.Tx, key types.TxKey, height, gasWanted, priority int6
 }
 
 // Size reports the size of the raw transaction in bytes.
-func (w *WrappedTx) Size() int64 { return int64(len(w.tx)) }
+func (w *wrappedTx) size() int64 { return int64(len(w.tx)) }
 
-// SetPeer adds the specified peer ID as a sender of w.
-func (w *WrappedTx) SetPeer(id uint16) {
+// setPeer adds the specified peer ID as a sender of w.
+func (w *wrappedTx) setPeer(id uint16) {
 	w.mtx.Lock()
 	defer w.mtx.Unlock()
 	if w.peers == nil {
@@ -51,8 +51,8 @@ func (w *WrappedTx) SetPeer(id uint16) {
 	}
 }
 
-// HasPeer reports whether the specified peer ID is a sender of w.
-func (w *WrappedTx) HasPeer(id uint16) bool {
+// hasPeer reports whether the specified peer ID is a sender of w.
+func (w *wrappedTx) hasPeer(id uint16) bool {
 	w.mtx.Lock()
 	defer w.mtx.Unlock()
 	_, ok := w.peers[id]

@@ -195,14 +195,14 @@ func mempoolLogger() log.Logger {
 	})
 }
 
-func newMempoolWithApp(cc proxy.ClientCreator) (*TxMempool, func()) {
+func newMempoolWithApp(cc proxy.ClientCreator) (*TxPool, func()) {
 	conf := cfg.ResetTestRoot("mempool_test")
 
 	mp, cu := newMempoolWithAppAndConfig(cc, conf)
 	return mp, cu
 }
 
-func newMempoolWithAppAndConfig(cc proxy.ClientCreator, conf *cfg.Config) (*TxMempool, func()) {
+func newMempoolWithAppAndConfig(cc proxy.ClientCreator, conf *cfg.Config) (*TxPool, func()) {
 	appConnMem, _ := cc.NewABCIClient()
 	appConnMem.SetLogger(log.TestingLogger().With("module", "abci-client", "connection", "mempool"))
 	err := appConnMem.Start()
@@ -210,7 +210,7 @@ func newMempoolWithAppAndConfig(cc proxy.ClientCreator, conf *cfg.Config) (*TxMe
 		panic(err)
 	}
 
-	mp := NewTxMempool(log.TestingLogger(), conf.Mempool, appConnMem, 0)
+	mp := NewTxPool(log.TestingLogger(), conf.Mempool, appConnMem, 0)
 
 	return mp, func() { os.RemoveAll(conf.RootDir) }
 }
