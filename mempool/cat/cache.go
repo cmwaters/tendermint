@@ -97,7 +97,6 @@ type EvictedTxInfo struct {
 	priority    int64
 	gasWanted   int64
 	sender      string
-	peers       map[uint16]bool
 }
 
 type EvictedTxCache struct {
@@ -128,7 +127,6 @@ func (c *EvictedTxCache) Push(wtx *wrappedTx) {
 		priority:    wtx.priority,
 		gasWanted:   wtx.gasWanted,
 		sender:      wtx.sender,
-		peers:       wtx.peers,
 	}
 	// if cache too large, remove the oldest entry
 	if len(c.cache) > c.size {
@@ -193,6 +191,9 @@ func NewSeenTxSet(size int) *SeenTxSet {
 }
 
 func (s *SeenTxSet) Add(txKey types.TxKey, peer uint16) {
+	if peer == 0 {
+		return
+	}
 	s.mtx.Lock()
 	defer s.mtx.Unlock()
 	seenSet, exists := s.set[txKey]
@@ -223,14 +224,28 @@ func (s *SeenTxSet) constrainSize() {
 	}
 }
 
-func (s *SeenTxSet) Pop(txKey types.TxKey) map[uint16]bool {
+func (s *SeenTxSet) Pop(txKey types.TxKey) uint16 {
+	s.mtx.Lock()
+	defer s.mtx.Unlock()
+	seenSet, exists := s.set[txKey]
+	if !exists {
+		return 0
+	} else {
+		for peer := range seenSet.peers {
+			delete(seenSet.peers, peer)
+			return peer
+		}
+		return 0
+	}
+}
+
+func (s *SeenTxSet) Get(txKey types.TxKey) map[uint16]bool {
 	s.mtx.Lock()
 	defer s.mtx.Unlock()
 	seenSet, exists := s.set[txKey]
 	if !exists {
 		return nil
 	} else {
-		delete(s.set, txKey)
 		return seenSet.peers
 	}
 }

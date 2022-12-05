@@ -50,7 +50,7 @@ func TestReactorBroadcastTxsMessage(t *testing.T) {
 	// replace Connect2Switches (full mesh) with a func, which connects first
 	// reactor to others and nothing else, this test should also pass with >2 reactors.
 	const N = 2
-	reactors := makeAndConnectReactors(config, N)
+	reactors := makeAndConnectReactors(t, config, N)
 	defer func() {
 		for _, r := range reactors {
 			if err := r.Stop(); err != nil {
@@ -78,7 +78,8 @@ func TestReactorSendSeenTxOnConnection(t *testing.T) {
 	cc := proxy.NewLocalClientCreator(app)
 	pool, cleanup := newMempoolWithApp(cc)
 	t.Cleanup(cleanup)
-	reactor := NewReactor(cfg.TestConfig().Mempool, pool)
+	reactor, err := NewReactor(pool, &ReactorOptions{})
+	require.NoError(t, err)
 
 	tx1 := types.Tx("hello")
 	key1 := tx1.Key()
@@ -139,7 +140,7 @@ func TestLegacyReactorReceiveBasic(t *testing.T) {
 	// replace Connect2Switches (full mesh) with a func, which connects first
 	// reactor to others and nothing else, this test should also pass with >2 reactors.
 	const N = 1
-	reactors := makeAndConnectReactors(config, N)
+	reactors := makeAndConnectReactors(t, config, N)
 	var (
 		reactor = reactors[0]
 		peer    = p2pmock.NewPeer(nil)
@@ -161,16 +162,18 @@ func TestLegacyReactorReceiveBasic(t *testing.T) {
 	})
 }
 
-func makeAndConnectReactors(config *cfg.Config, n int) []*Reactor {
+func makeAndConnectReactors(t *testing.T, config *cfg.Config, n int) []*Reactor {
 	reactors := make([]*Reactor, n)
 	logger := mempoolLogger()
+	var err error
 	for i := 0; i < n; i++ {
 		app := kvstore.NewApplication()
 		cc := proxy.NewLocalClientCreator(app)
 		mempool, cleanup := newMempoolWithApp(cc)
-		defer cleanup()
+		t.Cleanup(cleanup)
 
-		reactors[i] = NewReactor(config.Mempool, mempool) // so we dont start the consensus states
+		reactors[i], err = NewReactor(mempool, &ReactorOptions{}) // so we dont start the consensus states
+		require.NoError(t, err)
 		reactors[i].SetLogger(logger.With("validator", i))
 	}
 

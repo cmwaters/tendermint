@@ -153,6 +153,14 @@ func (txmp *TxPool) Has(txKey types.TxKey) bool {
 	return txmp.store.has(txKey)
 }
 
+func (txmp *TxPool) Get(txKey types.TxKey) (types.Tx, bool) {
+	wtx := txmp.store.get(txKey)
+	if wtx != nil {
+		return wtx.tx, true
+	}
+	return types.Tx{}, false
+}
+
 func (txmp *TxPool) IsRejectedTx(txKey types.TxKey) bool {
 	return txmp.rejectedTxCache.Has(txKey)
 }
@@ -170,10 +178,6 @@ func (txmp *TxPool) TryReinsertEvictedTx(txKey types.TxKey, tx types.Tx, peer ui
 	wtx := newWrappedTx(
 		tx, txKey, txmp.height, info.gasWanted, info.priority, info.sender,
 	)
-	for p := range info.peers {
-		wtx.setPeer(p)
-	}
-	wtx.setPeer(peer)
 	checkTxResp := &abci.ResponseCheckTx{
 		Code:      abci.CodeTypeOK,
 		Priority:  info.priority,
@@ -302,9 +306,6 @@ func (txmp *TxPool) tryAddNewTx(tx types.Tx, key types.TxKey, txInfo mempool.TxI
 	wtx := newWrappedTx(
 		tx, key, txmp.height, rsp.GasWanted, rsp.Priority, rsp.Sender,
 	)
-	if txInfo.SenderID > 0 {
-		wtx.setPeer(txInfo.SenderID)
-	}
 
 	// Perform the post check
 	err = txmp.postCheck(wtx.tx, rsp)
@@ -345,15 +346,7 @@ func (txmp *TxPool) Flush() {
 // peer and false if the mempool has not yet seen the transaction that the
 // peer has
 func (txmp *TxPool) PeerHasTx(peer uint16, txKey types.TxKey) {
-	// peer must be non-zero
-	if peer == 0 {
-		return
-	}
-	if txmp.store.has(txKey) {
-		txmp.store.setPeer(peer, txKey)
-	} else {
-		txmp.seenByPeersSet.Add(txKey, peer)
-	}
+	txmp.seenByPeersSet.Add(txKey, peer)
 }
 
 // allEntriesSorted returns a slice of all the transactions currently in the
@@ -538,14 +531,6 @@ func (txmp *TxPool) addNewTransaction(wtx *wrappedTx, checkTxRes *abci.ResponseC
 			if evictedBytes >= wtx.size() {
 				break
 			}
-		}
-	}
-
-	// check if the transaction has been seen by other peers before
-	peers := txmp.seenByPeersSet.Pop(wtx.key)
-	if peers != nil {
-		for peer := range peers {
-			wtx.setPeer(peer)
 		}
 	}
 

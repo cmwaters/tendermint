@@ -23,26 +23,9 @@ func newStore() *store {
 func (s *store) set(wtx *wrappedTx) {
 	s.mtx.Lock()
 	defer s.mtx.Unlock()
-	if tx, exists := s.txs[wtx.key]; !exists {
+	if tx, exists := s.txs[wtx.key]; !exists || tx.height == 0 {
 		s.txs[wtx.key] = wtx
 		s.bytes += wtx.size()
-	} else if tx.height == 0 { // the tx was reserved beforehand
-		// if there are existing peers who have seen the transaction
-		// in the meantime then add those
-		existingPeers := tx.peers
-		for peer := range existingPeers {
-			wtx.setPeer(peer)
-		}
-		s.txs[wtx.key] = wtx
-		s.bytes += wtx.size()
-	}
-}
-
-func (s *store) setPeer(peer uint16, txKey types.TxKey) {
-	s.mtx.RLock()
-	defer s.mtx.RUnlock()
-	if tx, ok := s.txs[txKey]; ok {
-		tx.setPeer(peer)
 	}
 }
 

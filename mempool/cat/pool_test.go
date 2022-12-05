@@ -628,25 +628,6 @@ func TestTxPool_CheckTxPostCheckError(t *testing.T) {
 	}
 }
 
-func TestSeenTx(t *testing.T) {
-	txmp := setup(t, 500)
-	tx := types.Tx("sender=0000=1")
-
-	// mark a few peers as already having seen a tx
-	txmp.PeerHasTx(1, tx.Key())
-	txmp.PeerHasTx(2, tx.Key())
-
-	// now add the transaction
-	err := txmp.CheckTx(tx, nil, mempool.TxInfo{SenderID: 3})
-	require.NoError(t, err)
-	require.True(t, txmp.Has(tx.Key()))
-
-	wtx := txmp.store.get(tx.Key())
-	require.True(t, wtx.peers[1])
-	require.True(t, wtx.peers[2])
-	require.True(t, wtx.peers[3])
-}
-
 func TestConcurrentlyAddingTx(t *testing.T) {
 	txmp := setup(t, 500)
 	tx := types.Tx("sender=0000=1")
