@@ -97,6 +97,7 @@ type EvictedTxInfo struct {
 	priority    int64
 	gasWanted   int64
 	sender      string
+	size        int64
 }
 
 type EvictedTxCache struct {
@@ -119,6 +120,12 @@ func (c *EvictedTxCache) Has(txKey types.TxKey) bool {
 	return exists
 }
 
+func (c *EvictedTxCache) Get(txKey types.TxKey) *EvictedTxInfo {
+	c.mtx.Lock()
+	defer c.mtx.Unlock()
+	return c.cache[txKey]
+}
+
 func (c *EvictedTxCache) Push(wtx *wrappedTx) {
 	c.mtx.Lock()
 	defer c.mtx.Unlock()
@@ -127,6 +134,7 @@ func (c *EvictedTxCache) Push(wtx *wrappedTx) {
 		priority:    wtx.priority,
 		gasWanted:   wtx.gasWanted,
 		sender:      wtx.sender,
+		size:        wtx.size(),
 	}
 	// if cache too large, remove the oldest entry
 	if len(c.cache) > c.size {
@@ -237,6 +245,12 @@ func (s *SeenTxSet) Pop(txKey types.TxKey) uint16 {
 		}
 		return 0
 	}
+}
+
+func (s *SeenTxSet) Remove(txKey types.TxKey) {
+	s.mtx.Lock()
+	defer s.mtx.Unlock()
+	delete(s.set, txKey)
 }
 
 func (s *SeenTxSet) Get(txKey types.TxKey) map[uint16]bool {

@@ -22,7 +22,7 @@ type Metrics struct {
 	// Histogram of transaction sizes, in bytes.
 	TxSizeBytes metrics.Histogram
 
-	// Number of failed transactions.
+	// Number of failed transactions due to validity.
 	FailedTxs metrics.Counter
 
 	// RejectedTxs defines the number of rejected transactions. These are

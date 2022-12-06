@@ -7,6 +7,8 @@ import (
 	"github.com/tendermint/tendermint/types"
 )
 
+const globalRequestTimeout = 1 * time.Hour
+
 // requestScheduler tracks the lifecycle of outbound transaction requests.
 type requestScheduler struct {
 	mtx sync.Mutex
@@ -38,10 +40,19 @@ func (r *requestScheduler) Add(key types.TxKey, peer uint16, onTimeout func(key 
 	defer r.mtx.Unlock()
 
 	timer := time.AfterFunc(r.responseTime, func() {
-		// cleanup resources
-		r.MarkReceived(peer, key)
 		// trigger callback
 		onTimeout(key)
+
+		// We set another timeout because the peer could still send
+		// a late response after the first timeout and it's important
+		// to recognise that it is a transaction in response to a
+		// request and not a new transaction being broadcasted to the entire
+		// network. This timer cannot be stopped and is used to ensure
+		// garbage collection.
+		time.AfterFunc(globalRequestTimeout, func() {
+			delete(r.requestsByPeer[peer], key)
+			delete(r.requestsByTx, key)
+		})
 	})
 	if _, ok := r.requestsByPeer[peer]; !ok {
 		r.requestsByPeer[peer] = RequestSet{key: timer}
