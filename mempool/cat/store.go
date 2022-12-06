@@ -7,8 +7,9 @@ import (
 	"github.com/tendermint/tendermint/types"
 )
 
+// simple, thread-safe in memory store for transactions
 type store struct {
-	mtx   *sync.RWMutex
+	mtx   sync.RWMutex
 	bytes int64
 	txs   map[types.TxKey]*wrappedTx
 }
@@ -21,6 +22,9 @@ func newStore() *store {
 }
 
 func (s *store) set(wtx *wrappedTx) {
+	if wtx == nil {
+		return
+	}
 	s.mtx.Lock()
 	defer s.mtx.Unlock()
 	if tx, exists := s.txs[wtx.key]; !exists || tx.height == 0 {
@@ -93,7 +97,7 @@ func (s *store) totalBytes() int64 {
 func (s *store) getAllKeys() []types.TxKey {
 	s.mtx.RLock()
 	defer s.mtx.RUnlock()
-	keys := make([]types.TxKey, 0, len(s.txs))
+	keys := make([]types.TxKey, len(s.txs))
 	idx := 0
 	for key := range s.txs {
 		keys[idx] = key
@@ -105,7 +109,7 @@ func (s *store) getAllKeys() []types.TxKey {
 func (s *store) getAllTxs() []*wrappedTx {
 	s.mtx.RLock()
 	defer s.mtx.RUnlock()
-	txs := make([]*wrappedTx, 0, len(s.txs))
+	txs := make([]*wrappedTx, len(s.txs))
 	idx := 0
 	for _, tx := range s.txs {
 		txs[idx] = tx
