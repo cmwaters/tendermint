@@ -19,6 +19,8 @@ const (
 	// tx_key + node_id + buffer (for proto encoding)
 	maxStateChannelSize = tmhash.Size + tmhash.TruncatedSize + 10
 
+	// default duration to wait before considering a peer non-responsive
+	// and searching for the tx from a new peer
 	defaultGossipDelay = 100 * time.Millisecond
 
 	// Content Addressable Tx Pool gossips state based messages (SeenTx and WantTx) on a separate channel
@@ -80,7 +82,7 @@ func NewReactor(mempool *TxPool, opts *ReactorOptions) (*Reactor, error) {
 		opts:     opts,
 		mempool:  mempool,
 		ids:      newMempoolIDs(),
-		requests: newRequestScheduler(opts.MaxGossipDelay),
+		requests: newRequestScheduler(opts.MaxGossipDelay, defaultGlobalRequestTimeout),
 	}
 	memR.BaseReactor = *p2p.NewBaseReactor("Mempool", memR)
 	return memR, nil
@@ -177,7 +179,7 @@ func (memR *Reactor) ReceiveEnvelope(e p2p.Envelope) {
 	case *protomem.Txs:
 		protoTxs := msg.GetTxs()
 		if len(protoTxs) == 0 {
-			memR.Logger.Error("received tmpty txs from peer", "src", e.Src)
+			memR.Logger.Error("received empty txs from peer", "src", e.Src)
 			return
 		}
 		peerID := memR.ids.GetIDForPeer(e.Src.ID())
@@ -194,6 +196,7 @@ func (memR *Reactor) ReceiveEnvelope(e p2p.Envelope) {
 			// If we requested the transaction we mark it as received.
 			if memR.requests.From(peerID).Includes(key) {
 				memR.requests.MarkReceived(peerID, key)
+				memR.Logger.Debug("received a response for a requested transaction", "peerID", e.Src.ID(), "txKey", key)
 			} else {
 				// If we didn't request the transaction we simply mark the peer as having the
 				// tx (we'd have already done it if we were requesting the tx).
@@ -202,10 +205,11 @@ func (memR *Reactor) ReceiveEnvelope(e p2p.Envelope) {
 				// the transaction and we should notify others in our SeenTx that is broadcasted
 				// to them
 				from = string(e.Src.ID())
+				memR.Logger.Debug("received new trasaction", "from", from, "txKey", key)
 			}
 			_, err = memR.mempool.TryAddNewTx(ntx, key, txInfo)
 			if err != nil {
-				memR.Logger.Info("Could not add tx", "tx_key", key, "err", err)
+				memR.Logger.Info("Could not add tx", "txKey", key, "err", err)
 				return
 			}
 			if !memR.opts.ListenOnly {
@@ -227,7 +231,7 @@ func (memR *Reactor) ReceiveEnvelope(e p2p.Envelope) {
 	case *protomem.SeenTx:
 		txKey, err := types.TxKeyFromBytes(msg.TxKey)
 		if err != nil {
-			memR.Logger.Error("Peer sent SeenTx with incorrect key size", "err", err)
+			memR.Logger.Error("peer sent SeenTx with incorrect tx key", "err", err)
 			memR.Switch.StopPeerForError(e.Src, err)
 			return
 		}
@@ -236,6 +240,7 @@ func (memR *Reactor) ReceiveEnvelope(e p2p.Envelope) {
 		if !memR.mempool.Has(txKey) && !memR.mempool.IsRejectedTx(txKey) {
 			// If we are already requesting that tx, then we don't need to go any further.
 			if memR.requests.ForTx(txKey) {
+				memR.Logger.Debug("received a SeenTx message for a transaction we are already requesting", "txKey", txKey)
 				return
 			}
 
@@ -252,6 +257,8 @@ func (memR *Reactor) ReceiveEnvelope(e p2p.Envelope) {
 				from = msg.XFrom.(*protomem.SeenTx_From).From
 			}
 			if from != "" && memR.ids.GetIDForPeer(p2p.ID(from)) != 0 {
+				memR.Logger.Debug("received a SeenTx message that originally came from a peer we are connected to. Waiting for the new transaction.",
+					"txKey", txKey)
 				// We are connected to the peer that originally sent the transaction so we
 				// assume there's a high probability that the original sender will also
 				// send us the transaction. We set a timeout in case this is not true.
@@ -283,7 +290,7 @@ func (memR *Reactor) ReceiveEnvelope(e p2p.Envelope) {
 	case *protomem.WantTx:
 		txKey, err := types.TxKeyFromBytes(msg.TxKey)
 		if err != nil {
-			memR.Logger.Error("Peer sent WantTx with incorrect key size", "err", err)
+			memR.Logger.Error("peer sent WantTx with incorrect tx key", "err", err)
 			memR.Switch.StopPeerForError(e.Src, err)
 			return
 		}
@@ -357,7 +364,7 @@ func (memR *Reactor) broadcastSeenTx(txKey types.TxKey, fromPeer string) {
 // broadcastNewTx broadcast new transaction to all peers. We assume
 // that they have not already seen this transaction
 func (memR *Reactor) broadcastNewTx(tx types.Tx) {
-	memR.Logger.Debug("broadcasting new tx to all peers")
+	memR.Logger.Debug("broadcasting new tx to all caught up peers")
 	for _, peer := range memR.Switch.Peers().List() {
 		if p, ok := peer.(PeerState); ok {
 			// make sure peer isn't too far behind. This can happen
@@ -377,13 +384,16 @@ func (memR *Reactor) broadcastNewTx(tx types.Tx) {
 // requestTx requests a transaction from a peer and tracks it,
 // requesting it from another peer if the first peer does not respond.
 func (memR *Reactor) requestTx(txKey types.TxKey, peer p2p.Peer) {
-	memR.Logger.Debug("requesting tx", "tx_key", txKey, "peer", peer)
+	memR.Logger.Debug("requesting tx", "txKey", txKey, "peerID", peer.ID())
 	success := p2p.SendEnvelopeShim(peer, p2p.Envelope{ //nolint: staticcheck
 		ChannelID: MempoolStateChannel,
 		Message:   &protomem.WantTx{TxKey: txKey[:]},
 	}, memR.Logger)
 	if success {
-		memR.requests.Add(txKey, memR.ids.GetIDForPeer(peer.ID()), memR.findNewPeerToRequestTx)
+		requested := memR.requests.Add(txKey, memR.ids.GetIDForPeer(peer.ID()), memR.findNewPeerToRequestTx)
+		if requested {
+			memR.Logger.Error("unable to request tx", "txKey", txKey, "peerID", peer.ID())
+		}
 	}
 }
 
@@ -395,6 +405,7 @@ func (memR *Reactor) findNewPeerToRequestTx(txKey types.TxKey) {
 	if peerID == 0 {
 		// No other peer has the transaction we are looking for.
 		// We give up 🤷‍♂️
+		memR.Logger.Debug("no other peer has the tx we are looking for", "txKey", txKey)
 		return
 	}
 	peer := memR.ids.GetPeer(peerID)
@@ -405,6 +416,7 @@ func (memR *Reactor) findNewPeerToRequestTx(txKey types.TxKey) {
 // sends a `SeenTx` message to the peer. This is added to a queue and will block
 // when the queue becomes full.
 func (memR *Reactor) sendAllTxKeys(peer p2p.Peer) {
+	memR.Logger.Debug("sending all seen txs to peer", "peerID", peer.ID())
 	txKeys := memR.mempool.store.getAllKeys()
 	for _, txKey := range txKeys {
 		p2p.SendEnvelopeShim(peer, p2p.Envelope{ //nolint: staticcheck

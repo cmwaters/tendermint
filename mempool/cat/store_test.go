@@ -133,7 +133,7 @@ func TestStoreGetTxs(t *testing.T) {
 	require.Equal(t, numTxs, len(keys))
 
 	// get txs below a certain priority
-	txs, bz := store.getTxsBelowPriority(int64(numTxs/2))
+	txs, bz := store.getTxsBelowPriority(int64(numTxs / 2))
 	require.Equal(t, numTxs/2, len(txs))
 	var actualBz int64 = 0
 	for _, tx := range txs {
