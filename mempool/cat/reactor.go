@@ -17,7 +17,7 @@ import (
 
 const (
 	// tx_key + node_id + buffer (for proto encoding)
-	maxStateChannelSize = tmhash.Size + tmhash.TruncatedSize + 10
+	maxStateChannelSize = tmhash.Size + (2*p2p.IDByteLength) + 10
 
 	// default duration to wait before considering a peer non-responsive
 	// and searching for the tx from a new peer
@@ -106,9 +106,14 @@ func (memR *Reactor) OnStart() error {
 				return
 
 			// listen in for any newly verified tx via RFC, then immediately
-			// broadcast it to peers.
-			case tx := <-memR.mempool.outboundTxs:
-				memR.broadcastNewTx(tx)
+			// broadcasts it to all connected peers.
+			case nextTxKey := <-memR.mempool.next():
+				wtx := memR.mempool.store.get(nextTxKey)
+				// tx may have been removed after it was added to the broadcast queue
+				// thus we just skip over it
+				if wtx != nil {
+					memR.broadcastNewTx(wtx)
+				}
 			}
 		}
 	}()
@@ -151,7 +156,9 @@ func (memR *Reactor) InitPeer(peer p2p.Peer) p2p.Peer {
 // It starts a broadcast routine ensuring all txs are forwarded to the given peer.
 func (memR *Reactor) AddPeer(peer p2p.Peer) {
 	if !memR.opts.ListenOnly {
-		memR.sendAllTxKeys(peer)
+		if memR.mempool.Size() > 0 {
+			memR.sendAllTxKeys(peer)
+		} 
 	}
 }
 
@@ -200,7 +207,7 @@ func (memR *Reactor) ReceiveEnvelope(e p2p.Envelope) {
 			} else {
 				// If we didn't request the transaction we simply mark the peer as having the
 				// tx (we'd have already done it if we were requesting the tx).
-				memR.mempool.PeerHasTx(txInfo.SenderID, key)
+				memR.mempool.PeerHasTx(peerID, key)
 				// We assume if we hadn't requested it, that this is the original recipient of
 				// the transaction and we should notify others in our SeenTx that is broadcasted
 				// to them
@@ -253,7 +260,7 @@ func (memR *Reactor) ReceiveEnvelope(e p2p.Envelope) {
 
 			// Check if `From` is specified and if we are connected to the peer that originally sent the transaction
 			from := ""
-			if msg.XFrom.(*protomem.SeenTx_From) != nil {
+			if msg.XFrom != nil {
 				from = msg.XFrom.(*protomem.SeenTx_From).From
 			}
 			if from != "" && memR.ids.GetIDForPeer(p2p.ID(from)) != 0 {
@@ -265,6 +272,7 @@ func (memR *Reactor) ReceiveEnvelope(e p2p.Envelope) {
 				time.AfterFunc(memR.opts.MaxGossipDelay, func() {
 					// If we still don't have the transaction after the timeout, we find a new peer to request the tx
 					if !memR.mempool.Has(txKey) {
+						memR.Logger.Debug("timed out waiting for original sender, requesting tx from another peer...")
 						// NOTE: During this period, the peer may, for some reason have disconnected from us.
 						if memR.ids.GetIDForPeer(e.Src.ID()) == 0 {
 							// Get the first peer from the set
@@ -283,6 +291,8 @@ func (memR *Reactor) ReceiveEnvelope(e p2p.Envelope) {
 				// We therefore request the tx from the peer that sent us the SeenTx message
 				memR.requestTx(txKey, e.Src)
 			}
+		} else {
+			memR.Logger.Debug("received a seen tx for a tx we already have", "txKey", txKey)
 		}
 
 	// A peer is requesting a transaction that we have claimed to have. Find the specified
@@ -294,14 +304,16 @@ func (memR *Reactor) ReceiveEnvelope(e p2p.Envelope) {
 			memR.Switch.StopPeerForError(e.Src, err)
 			return
 		}
-		tx, has := memR.mempool.Get(types.TxKey(txKey))
+		tx, has := memR.mempool.Get(txKey)
 		if has && !memR.opts.ListenOnly {
+			peerID := memR.ids.GetIDForPeer(e.Src.ID())
+			memR.Logger.Debug("sending a tx in response to a want msg", "peer", peerID)
 			p2p.SendEnvelopeShim(e.Src, p2p.Envelope{ //nolint: staticcheck
 				ChannelID: mempool.MempoolChannel,
 				Message:   &protomem.Txs{Txs: [][]byte{tx}},
 			}, memR.Logger)
+			memR.mempool.PeerHasTx(peerID, txKey)
 		}
-		memR.mempool.PeerHasTx(memR.ids.GetIDForPeer(e.Src.ID()), types.TxKey(txKey))
 
 	default:
 		memR.Logger.Error("unknown message type", "src", e.Src, "chId", e.ChannelID, "msg", e.Message)
@@ -351,33 +363,37 @@ func (memR *Reactor) broadcastSeenTx(txKey types.TxKey, fromPeer string) {
 		if _, ok := alreadySeenTx[peerID]; ok {
 			continue
 		}
+		msg := &protomem.SeenTx{
+			TxKey: txKey[:],
+			XFrom: &protomem.SeenTx_From{From: fromPeer},
+		}
 		p2p.SendEnvelopeShim(peer, p2p.Envelope{ //nolint: staticcheck
 			ChannelID: MempoolStateChannel,
-			Message: &protomem.SeenTx{
-				TxKey: txKey[:],
-				XFrom: &protomem.SeenTx_From{From: fromPeer},
-			},
+			Message: msg,
 		}, memR.Logger)
 	}
 }
 
 // broadcastNewTx broadcast new transaction to all peers. We assume
 // that they have not already seen this transaction
-func (memR *Reactor) broadcastNewTx(tx types.Tx) {
+func (memR *Reactor) broadcastNewTx(tx *wrappedTx) {
 	memR.Logger.Debug("broadcasting new tx to all caught up peers")
 	for _, peer := range memR.Switch.Peers().List() {
 		if p, ok := peer.(PeerState); ok {
 			// make sure peer isn't too far behind. This can happen
 			// if the peer is blocksyncing still and catching up
 			// in which case we just skip sending the transaction
-			if p.GetHeight() < memR.mempool.Height()-10 {
+			if p.GetHeight() < tx.height-10 {
 				continue
 			}
 		}
-		_ = p2p.SendEnvelopeShim(peer, p2p.Envelope{
+		success := p2p.SendEnvelopeShim(peer, p2p.Envelope{
 			ChannelID: mempool.MempoolChannel,
-			Message:   &protomem.Txs{Txs: [][]byte{tx}},
+			Message:   &protomem.Txs{Txs: [][]byte{tx.tx}},
 		}, memR.Logger)
+		if success {
+			memR.mempool.PeerHasTx(memR.ids.GetIDForPeer(peer.ID()), tx.key)
+		}
 	}
 }
 
@@ -391,8 +407,8 @@ func (memR *Reactor) requestTx(txKey types.TxKey, peer p2p.Peer) {
 	}, memR.Logger)
 	if success {
 		requested := memR.requests.Add(txKey, memR.ids.GetIDForPeer(peer.ID()), memR.findNewPeerToRequestTx)
-		if requested {
-			memR.Logger.Error("unable to request tx", "txKey", txKey, "peerID", peer.ID())
+		if !requested {
+			memR.Logger.Error("have already marked a tx as requested", "txKey", txKey, "peerID", peer.ID())
 		}
 	}
 }
@@ -420,7 +436,7 @@ func (memR *Reactor) sendAllTxKeys(peer p2p.Peer) {
 	txKeys := memR.mempool.store.getAllKeys()
 	for _, txKey := range txKeys {
 		p2p.SendEnvelopeShim(peer, p2p.Envelope{ //nolint: staticcheck
-			ChannelID: mempool.MempoolChannel,
+			ChannelID: MempoolStateChannel,
 			Message:   &protomem.SeenTx{TxKey: txKey[:]},
 		}, memR.Logger)
 	}

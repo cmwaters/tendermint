@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"runtime"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/creachadair/taskgroup"
@@ -56,8 +57,6 @@ type TxPool struct {
 	postCheck            mempool.PostCheckFunc
 	height               int64 // the latest height passed to Update
 
-	// new transactions that need to be broadcasted to all peers
-	outboundTxs chan types.Tx
 	// Thread-safe cache of rejected transactions for quick look-up
 	rejectedTxCache *LRUTxCache
 	// Thread-safe cache of valid txs that were evicted
@@ -67,6 +66,12 @@ type TxPool struct {
 
 	// Store of wrapped transactions
 	store *store
+
+	// broadcastCh is an unbuffered channel of new transactions that need to
+	// be broadcasted to peers. Only populated if `broadcast` is enabled
+	broadcastCh      chan types.TxKey
+	broadcastMtx     sync.Mutex
+	txsToBeBroadcast map[types.TxKey]struct{}
 }
 
 // NewTxPool constructs a new, empty priority mempool at the specified
@@ -78,20 +83,23 @@ func NewTxPool(
 	height int64,
 	options ...TxPoolOption,
 ) *TxPool {
-
+	if height == 0 {
+		panic("cannot create TxPool with height == 0")
+	}
 	txmp := &TxPool{
-		logger:          logger,
-		config:          cfg,
-		proxyAppConn:    proxyAppConn,
-		metrics:         mempool.NopMetrics(),
-		rejectedTxCache: NewLRUTxCache(cfg.CacheSize),
-		evictedTxs:      NewEvictedTxCache(evictedTxCacheSize),
-		seenByPeersSet:  NewSeenTxSet(seenByPeerSetSize),
-		height:          height,
-		preCheck:        func(_ types.Tx) error { return nil },
-		postCheck:       func(_ types.Tx, _ *abci.ResponseCheckTx) error { return nil },
-		store:           newStore(),
-		outboundTxs:     make(chan types.Tx, 1),
+		logger:           logger,
+		config:           cfg,
+		proxyAppConn:     proxyAppConn,
+		metrics:          mempool.NopMetrics(),
+		rejectedTxCache:  NewLRUTxCache(cfg.CacheSize),
+		evictedTxs:       NewEvictedTxCache(evictedTxCacheSize),
+		seenByPeersSet:   NewSeenTxSet(seenByPeerSetSize),
+		height:           height,
+		preCheck:         func(_ types.Tx) error { return nil },
+		postCheck:        func(_ types.Tx, _ *abci.ResponseCheckTx) error { return nil },
+		store:            newStore(),
+		broadcastCh:      make(chan types.TxKey, 1),
+		txsToBeBroadcast: make(map[types.TxKey]struct{}),
 	}
 
 	for _, opt := range options {
@@ -211,13 +219,14 @@ func (txmp *TxPool) CheckTx(tx types.Tx, cb func(*abci.Response), txInfo mempool
 
 	// This is a new transaction that we haven't seen before. Verify it against the app and attempt
 	// to add it to the transaction pool.
-	rsp, err := txmp.TryAddNewTx(tx, tx.Key(), txInfo)
+	key := tx.Key()
+	rsp, err := txmp.TryAddNewTx(tx, key, txInfo)
 	if err != nil {
 		return err
 	}
 
-	// send this to the reactor to be broadcast to all peers
-	txmp.outboundTxs <- tx
+	// push to the broadcast queue that a new transaction is ready
+	txmp.markToBeBroadcast(key)
 
 	// call the callback if it is set
 	if cb != nil {
@@ -226,8 +235,32 @@ func (txmp *TxPool) CheckTx(tx types.Tx, cb func(*abci.Response), txInfo mempool
 	return nil
 }
 
-func (txmp *TxPool) OutboundTxs() <-chan types.Tx {
-	return txmp.outboundTxs
+func (txmp *TxPool) next() <-chan types.TxKey {
+	if len(txmp.txsToBeBroadcast) != 0 {
+		txmp.broadcastMtx.Lock()
+		defer txmp.broadcastMtx.Unlock()
+		ch := make(chan types.TxKey, 1)
+		for key := range txmp.txsToBeBroadcast {
+			delete(txmp.txsToBeBroadcast, key)
+			ch <- key
+			return ch
+		}
+	}
+	return txmp.broadcastCh
+}
+
+func (txmp *TxPool) markToBeBroadcast(key types.TxKey) {
+	if !txmp.config.Broadcast {
+		return
+	}
+
+	select {
+	case txmp.broadcastCh <- key:
+	default:
+		txmp.broadcastMtx.Lock()
+		defer txmp.broadcastMtx.Unlock()
+		txmp.txsToBeBroadcast[key] = struct{}{}
+	}
 }
 
 // TryAddNewTx attempts to add a tx that has not already been seen before. It first marks it as seen
@@ -331,6 +364,7 @@ func (txmp *TxPool) Flush() {
 // peer and false if the mempool has not yet seen the transaction that the
 // peer has
 func (txmp *TxPool) PeerHasTx(peer uint16, txKey types.TxKey) {
+	txmp.logger.Debug("peer has tx", "peer", peer, "txKey", fmt.Sprintf("%X", txKey))
 	txmp.seenByPeersSet.Add(txKey, peer)
 }
 
@@ -418,6 +452,7 @@ func (txmp *TxPool) Update(
 		panic(fmt.Sprintf("mempool: got %d transactions but %d DeliverTx responses",
 			len(blockTxs), len(deliverTxResponses)))
 	}
+	txmp.logger.Debug("updating mempool", "height", blockHeight, "txs", len(blockTxs))
 
 	txmp.height = blockHeight
 	txmp.notifiedTxsAvailable = false
@@ -484,13 +519,13 @@ func (txmp *TxPool) addNewTransaction(wtx *wrappedTx, checkTxRes *abci.ResponseC
 			txmp.evictedTxs.Push(wtx)
 			checkTxRes.MempoolError =
 				fmt.Sprintf("rejected valid incoming transaction; mempool is full (%X)",
-					wtx.tx.Hash())
-			return fmt.Errorf("rejected valid incoming transaction; mempool is full (%X)",
-				wtx.tx.Hash())
+					wtx.key)
+			return fmt.Errorf("rejected valid incoming transaction; mempool is full (%X). Size: (%d:%d)",
+				wtx.key, txmp.Size(), txmp.SizeBytes())
 		}
 
 		txmp.logger.Debug("evicting lower-priority transactions",
-			"new_tx", fmt.Sprintf("%X", wtx.tx.Hash()),
+			"new_tx", fmt.Sprintf("%X", wtx.key),
 			"new_priority", wtx.priority,
 		)
 
@@ -526,7 +561,7 @@ func (txmp *TxPool) addNewTransaction(wtx *wrappedTx, checkTxRes *abci.ResponseC
 	txmp.logger.Debug(
 		"inserted new valid transaction",
 		"priority", wtx.priority,
-		"tx", fmt.Sprintf("%X", wtx.tx.Hash()),
+		"tx", fmt.Sprintf("%X", wtx.key),
 		"height", txmp.height,
 		"num_txs", txmp.Size(),
 	)
@@ -612,7 +647,7 @@ func (txmp *TxPool) recheckTransactions() {
 				})
 				if err != nil {
 					txmp.logger.Error("failed to execute CheckTx during recheck",
-						"err", err, "hash", fmt.Sprintf("%x", wtx.tx.Hash()))
+						"err", err, "key", fmt.Sprintf("%x", wtx.key))
 				} else {
 					txmp.handleRecheckResult(wtx, rsp)
 				}
@@ -634,7 +669,7 @@ func (txmp *TxPool) canAddTx(size int64) bool {
 	numTxs := txmp.Size()
 	txBytes := txmp.SizeBytes()
 
-	if numTxs >= txmp.config.Size || size+txBytes > txmp.config.MaxTxsBytes {
+	if numTxs > txmp.config.Size || size+txBytes > txmp.config.MaxTxsBytes {
 		return false
 	}
 

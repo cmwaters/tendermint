@@ -3,6 +3,7 @@ package cat
 import (
 	"encoding/hex"
 	"os"
+	"sort"
 	"sync"
 	"testing"
 	"time"
@@ -10,7 +11,6 @@ import (
 	"github.com/go-kit/log/term"
 	"github.com/gogo/protobuf/proto"
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
 	"github.com/tendermint/tendermint/abci/example/kvstore"
@@ -29,7 +29,7 @@ import (
 )
 
 const (
-	numTxs  = 1000
+	numTxs  = 10
 	timeout = 120 * time.Second // ridiculously high because CircleCI is slow
 )
 
@@ -45,26 +45,13 @@ func (ps peerState) GetHeight() int64 {
 // be received in the others.
 func TestReactorBroadcastTxsMessage(t *testing.T) {
 	config := cfg.TestConfig()
-	// if there were more than two reactors, the order of transactions could not be
-	// asserted in waitForTxsOnReactors (due to transactions gossiping). If we
-	// replace Connect2Switches (full mesh) with a func, which connects first
-	// reactor to others and nothing else, this test should also pass with >2 reactors.
-	const N = 2
+	const N = 5
 	reactors := makeAndConnectReactors(t, config, N)
-	defer func() {
-		for _, r := range reactors {
-			if err := r.Stop(); err != nil {
-				assert.NoError(t, err)
-			}
-		}
-	}()
-	for _, r := range reactors {
-		for _, peer := range r.Switch.Peers().List() {
-			peer.Set(types.PeerStateKey, peerState{1})
-		}
-	}
 
 	txs := checkTxs(t, reactors[0].mempool, numTxs, mempool.UnknownPeerID)
+	sort.Slice(txs, func(i, j int) bool {
+		return txs[i].priority > txs[j].priority // N.B. higher priorities first
+	})
 	transactions := make(types.Txs, len(txs))
 	for idx, tx := range txs {
 		transactions[idx] = tx.tx
@@ -74,30 +61,29 @@ func TestReactorBroadcastTxsMessage(t *testing.T) {
 }
 
 func TestReactorSendSeenTxOnConnection(t *testing.T) {
-	app := kvstore.NewApplication()
-	cc := proxy.NewLocalClientCreator(app)
-	pool, cleanup := newMempoolWithApp(cc)
-	t.Cleanup(cleanup)
-	reactor, err := NewReactor(pool, &ReactorOptions{})
-	require.NoError(t, err)
+	reactor, pool := setupReactor(t)
 
-	tx1 := types.Tx("hello")
+	tx1 := newDefaultTx("hello")
 	key1 := tx1.Key()
 	msg1 := &memproto.SeenTx{TxKey: key1[:]}
-	msgBytes1, err := proto.Marshal(msg1.Wrap())
-	require.NoError(t, err)
-	tx2 := types.Tx("world")
+	env1 := p2p.Envelope{
+		ChannelID: MempoolStateChannel,
+		Message:   msg1,
+	}
+
+	tx2 := newDefaultTx("world")
 	key2 := tx2.Key()
 	msg2 := &memproto.SeenTx{TxKey: key2[:]}
-	msgBytes2, err := proto.Marshal(msg2.Wrap())
-	require.NoError(t, err)
+	env2 := p2p.Envelope{
+		ChannelID: MempoolStateChannel,
+		Message:   msg2,
+	}
 
 	peer := &mocks.Peer{}
 	nodeKey := p2p.NodeKey{PrivKey: ed25519.GenPrivKey()}
 	peer.On("ID").Return(nodeKey.ID())
-	peer.On("SendEnvelope", mempool.MempoolChannel, msgBytes1).Return(true)
-	peer.On("SendEnvelope", mempool.MempoolChannel, msgBytes2).Return(true)
-	peer.On("SendEnvelope", mempool.MempoolChannel, mock.AnythingOfType("[]byte")).Maybe()
+	peer.On("SendEnvelope", env1).Return(true)
+	peer.On("SendEnvelope", env2).Return(true)
 
 	pool.CheckTx(tx1, nil, mempool.TxInfo{})
 	pool.CheckTx(tx2, nil, mempool.TxInfo{})
@@ -106,6 +92,128 @@ func TestReactorSendSeenTxOnConnection(t *testing.T) {
 	reactor.AddPeer(peer)
 
 	peer.AssertExpectations(t)
+}
+
+func TestReactorSendWantTxAfterReceiveingSeenTx(t *testing.T) {
+	reactor, _ := setupReactor(t)
+
+	tx := newDefaultTx("hello")
+	key := tx.Key()
+	msg := &memproto.SeenTx{TxKey: key[:]}
+	expRsp := p2p.Envelope{
+		ChannelID: MempoolStateChannel,
+		Message:   &memproto.WantTx{TxKey: key[:]},
+	}
+
+	peer := &mocks.Peer{}
+	nodeKey := p2p.NodeKey{PrivKey: ed25519.GenPrivKey()}
+	peer.On("ID").Return(nodeKey.ID())
+	peer.On("SendEnvelope", expRsp).Return(true)
+
+	reactor.InitPeer(peer)
+	reactor.ReceiveEnvelope(p2p.Envelope{
+		Src:       peer,
+		Message:   msg,
+		ChannelID: MempoolStateChannel,
+	})
+
+	peer.AssertExpectations(t)
+}
+
+func TestReactorWaitsToReceiveTxFromOriginalSender(t *testing.T) {
+	reactor, pool := setupReactor(t)
+
+	originalPeer := &mocks.Peer{}
+	nodeKey2 := p2p.NodeKey{PrivKey: ed25519.GenPrivKey()}
+	originalPeer.On("ID").Return(nodeKey2.ID())
+
+	tx := newDefaultTx("hello")
+	key := tx.Key()
+	seenMsg := &memproto.SeenTx{
+		TxKey: key[:],
+		XFrom: &memproto.SeenTx_From{From: string(nodeKey2.ID())},
+	}
+	txMsg := &memproto.Txs{Txs: [][]byte{tx}}
+
+	peer := &mocks.Peer{}
+	nodeKey := p2p.NodeKey{PrivKey: ed25519.GenPrivKey()}
+	peer.On("ID").Return(nodeKey.ID())
+
+	reactor.InitPeer(peer)
+	reactor.InitPeer(originalPeer)
+	pool.CheckTx(tx, nil, mempool.TxInfo{})
+	reactor.ReceiveEnvelope(p2p.Envelope{
+		Src:       peer,
+		Message:   seenMsg,
+		ChannelID: MempoolStateChannel,
+	})
+
+	reactor.ReceiveEnvelope(p2p.Envelope{
+		Src:       peer,
+		Message:   txMsg,
+		ChannelID: mempool.MempoolChannel,
+	})
+
+	peer.AssertExpectations(t)
+	originalPeer.AssertExpectations(t)
+}
+
+func TestReactorEventuallySendsWantMsgAfterReceivingSeenTx(t *testing.T) {
+	reactor, _ := setupReactor(t)
+
+	originalPeer := &mocks.Peer{}
+	nodeKey2 := p2p.NodeKey{PrivKey: ed25519.GenPrivKey()}
+	originalPeer.On("ID").Return(nodeKey2.ID())
+
+	tx := newDefaultTx("hello")
+	key := tx.Key()
+	msg := &memproto.SeenTx{TxKey: key[:]}
+	expRsp := p2p.Envelope{
+		ChannelID: MempoolStateChannel,
+		Message:   &memproto.WantTx{TxKey: key[:]},
+	}
+
+	peer := &mocks.Peer{}
+	nodeKey := p2p.NodeKey{PrivKey: ed25519.GenPrivKey()}
+	peer.On("ID").Return(nodeKey.ID())
+	peer.On("SendEnvelope", expRsp).Return(true)
+
+	reactor.InitPeer(peer)
+	reactor.InitPeer(originalPeer)
+	reactor.ReceiveEnvelope(p2p.Envelope{
+		Src:       peer,
+		Message:   msg,
+		ChannelID: MempoolStateChannel,
+	})
+
+	peer.AssertExpectations(t)
+}
+
+// This is a bit of a hacky test because broadcasting SeenTxs requires
+// access to the entire `Switch` so we basically need to do a full integration
+// test. In this test, we have three nodes.
+// node A receives a tx pushed to them via node B
+// node A sends a seenTx to node C (and not node B)
+// node C is connected to node B so waits but eventually requests the tx from node A
+// node A provides the tx to node C and marks both peers as having seen the tx
+func TestReactorBroadcastsSeenTxAfterReceivingTx(t *testing.T) {
+	reactors := makeAndConnectReactors(t, cfg.TestConfig(), 3)
+	peers := reactors[0].Switch.Peers().List()
+
+	tx := newDefaultTx("hello")
+	key := tx.Key()
+	txMsg := &memproto.Txs{Txs: [][]byte{tx}}
+
+	reactors[0].ReceiveEnvelope(p2p.Envelope{
+		Src:       peers[0],
+		Message:   txMsg,
+		ChannelID: mempool.MempoolChannel,
+	})
+
+	require.Eventually(t, func() bool { 
+		peerSet := reactors[0].mempool.seenByPeersSet.Get(key)
+		return len(peerSet) == 2
+	}, 5*time.Second, 100*time.Millisecond)
 }
 
 func TestMempoolVectors(t *testing.T) {
@@ -162,26 +270,45 @@ func TestLegacyReactorReceiveBasic(t *testing.T) {
 	})
 }
 
+func setupReactor(t *testing.T) (*Reactor, *TxPool) {
+	app := &application{kvstore.NewApplication()}
+	cc := proxy.NewLocalClientCreator(app)
+	pool, cleanup := newMempoolWithApp(cc)
+	t.Cleanup(cleanup)
+	reactor, err := NewReactor(pool, &ReactorOptions{})
+	require.NoError(t, err)
+	return reactor, pool
+}
+
 func makeAndConnectReactors(t *testing.T, config *cfg.Config, n int) []*Reactor {
 	reactors := make([]*Reactor, n)
 	logger := mempoolLogger()
-	var err error
 	for i := 0; i < n; i++ {
-		app := kvstore.NewApplication()
-		cc := proxy.NewLocalClientCreator(app)
-		mempool, cleanup := newMempoolWithApp(cc)
-		t.Cleanup(cleanup)
-
-		reactors[i], err = NewReactor(mempool, &ReactorOptions{}) // so we dont start the consensus states
-		require.NoError(t, err)
+		var pool *TxPool
+		reactors[i], pool = setupReactor(t)
+		pool.logger = logger.With("validator", i)
 		reactors[i].SetLogger(logger.With("validator", i))
 	}
 
-	p2p.MakeConnectedSwitches(config.P2P, n, func(i int, s *p2p.Switch) *p2p.Switch {
+	switches := p2p.MakeConnectedSwitches(config.P2P, n, func(i int, s *p2p.Switch) *p2p.Switch {
 		s.AddReactor("MEMPOOL", reactors[i])
 		return s
 
 	}, p2p.Connect2Switches)
+
+	t.Cleanup(func() {
+		for _, s := range switches {
+			if err := s.Stop(); err != nil {
+				assert.NoError(t, err)
+			}
+		}
+	})
+
+	for _, r := range reactors {
+		for _, peer := range r.Switch.Peers().List() {
+			peer.Set(types.PeerStateKey, peerState{1})
+		}
+	}
 	return reactors
 }
 
@@ -213,7 +340,7 @@ func newMempoolWithAppAndConfig(cc proxy.ClientCreator, conf *cfg.Config) (*TxPo
 		panic(err)
 	}
 
-	mp := NewTxPool(log.TestingLogger(), conf.Mempool, appConnMem, 0)
+	mp := NewTxPool(log.TestingLogger(), conf.Mempool, appConnMem, 1)
 
 	return mp, func() { os.RemoveAll(conf.RootDir) }
 }
@@ -251,7 +378,8 @@ func waitForTxsOnReactor(t *testing.T, txs types.Txs, reactor *Reactor, reactorI
 
 	reapedTxs := mempool.ReapMaxTxs(len(txs))
 	for i, tx := range txs {
-		assert.Equalf(t, tx, reapedTxs[i],
-			"txs at index %d on reactor %d don't match: %v vs %v", i, reactorIndex, tx, reapedTxs[i])
+		require.Contains(t, reapedTxs, tx)
+		require.Equal(t, tx, reapedTxs[i],
+			"txs at index %d on reactor %d don't match: %x vs %x", i, reactorIndex, tx, reapedTxs[i])
 	}
 }

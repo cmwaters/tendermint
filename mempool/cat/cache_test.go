@@ -20,18 +20,24 @@ func TestSeenTxSet(t *testing.T) {
 	)
 
 	seenSet := NewSeenTxSet(2)
-	require.Nil(t, seenSet.Pop(tx1Key))
+	require.Zero(t, seenSet.Pop(tx1Key))
 
 	seenSet.Add(tx1Key, peer1)
-	seenSet.Add(tx1Key, peer2)
 	seenSet.Add(tx1Key, peer1)
-	peers := seenSet.Pop(tx1Key)
+	require.Equal(t, 1, seenSet.Len())
+	seenSet.Add(tx1Key, peer2)
+	peers := seenSet.Get(tx1Key)
 	require.NotNil(t, peers)
 	require.Equal(t, map[uint16]bool{peer1: true, peer2: true}, peers)
 	seenSet.Add(tx2Key, peer1)
+	// make sure there is sufficient time between tx2 and tx3
+	time.Sleep(1 * time.Millisecond)
 	seenSet.Add(tx3Key, peer1)
 	seenSet.Add(tx1Key, peer1)
 	require.Equal(t, 2, seenSet.Len())
+	
+	require.Zero(t, seenSet.Pop(tx2Key))
+	require.Equal(t, peer1, seenSet.Pop(tx1Key))
 }
 
 func TestCacheRemove(t *testing.T) {

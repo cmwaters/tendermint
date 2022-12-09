@@ -1,6 +1,7 @@
 package cat
 
 import (
+	"bytes"
 	"fmt"
 	"sync"
 	"testing"
@@ -88,26 +89,34 @@ func TestStoreConcurrentAccess(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			tx := types.Tx(fmt.Sprintf("tx%d", i%(numTxs/10)))
-			key := tx.Key()
-			wtx := newWrappedTx(tx, key, 1, 1, 1, "")
-			if !store.has(key) {
-				store.reserve(key)
-				// the first half fail
-				if i < numTxs/2 {
-					store.release(key)
-					return
+			ticker := time.NewTicker(10 * time.Millisecond)
+			for {
+				select {
+				case <-ticker.C:
+					tx := types.Tx(fmt.Sprintf("tx%d", i%(numTxs/10)))
+					key := tx.Key()
+					wtx := newWrappedTx(tx, key, 1, 1, 1, "")
+					existingTx := store.get(key) 
+					if existingTx != nil && bytes.Equal(existingTx.tx, tx) {
+						// tx has already been added
+						return
+					}
+					if store.reserve(key) {
+						// some fail
+						if i % 3 == 0 {
+							store.release(key)
+							return
+						}
+						store.set(wtx)
+						// this should be a noop
+						store.release(key)
+						return
+					}
+					// already reserved so we retry in 10 milliseconds
 				}
-				store.set(wtx)
-				store.release(key)
 			}
 		}(i)
 	}
-	go func() {
-		require.Eventually(t, func() bool {
-			return len(store.getAllTxs()) == numTxs/10
-		}, time.Second, time.Millisecond)
-	}()
 	wg.Wait()
 
 	require.Equal(t, numTxs/10, store.size())
@@ -123,6 +132,8 @@ func TestStoreGetTxs(t *testing.T) {
 		wtx := newWrappedTx(tx, key, 1, 1, int64(i), "")
 		store.set(wtx)
 	}
+
+	require.Equal(t, numTxs, store.size())
 
 	// get all txs
 	txs := store.getAllTxs()

@@ -8,7 +8,6 @@ import (
 	"os"
 	"sort"
 	"strconv"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -34,6 +33,14 @@ type application struct {
 type testTx struct {
 	tx       types.Tx
 	priority int64
+}
+
+func newTx(i int, peerID uint16, msg []byte, priority int64) []byte {
+	return []byte(fmt.Sprintf("sender-%d-%d=%X=%d", i, peerID, msg, priority))
+}
+
+func newDefaultTx(msg string) types.Tx {
+	return types.Tx(newTx(0, 0, []byte(msg), 1))
 }
 
 func (app *application) CheckTx(req abci.RequestCheckTx) abci.ResponseCheckTx {
@@ -78,8 +85,8 @@ func setup(t testing.TB, cacheSize int, options ...TxPoolOption) *TxPool {
 	app := &application{kvstore.NewApplication()}
 	cc := proxy.NewLocalClientCreator(app)
 
-	cfg := config.ResetTestRoot(strings.ReplaceAll(t.Name(), "/", "|"))
-	cfg.Mempool.CacheSize = cacheSize
+	cfg := config.TestMempoolConfig()
+	cfg.CacheSize = cacheSize
 
 	appConnMem, err := cc.NewABCIClient()
 	require.NoError(t, err)
@@ -90,7 +97,7 @@ func setup(t testing.TB, cacheSize int, options ...TxPoolOption) *TxPool {
 		require.NoError(t, appConnMem.Stop())
 	})
 
-	return NewTxPool(log.TestingLogger().With("test", t.Name()), cfg.Mempool, appConnMem, 0, options...)
+	return NewTxPool(log.TestingLogger().With("test", t.Name()), cfg, appConnMem, 1, options...)
 }
 
 // mustCheckTx invokes txmp.CheckTx for the given transaction and waits until
@@ -105,6 +112,7 @@ func checkTxs(t *testing.T, txmp *TxPool, numTxs int, peerID uint16) []testTx {
 
 	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
 
+	current := txmp.Size()
 	for i := 0; i < numTxs; i++ {
 		prefix := make([]byte, 20)
 		_, err := rng.Read(prefix)
@@ -113,10 +121,12 @@ func checkTxs(t *testing.T, txmp *TxPool, numTxs int, peerID uint16) []testTx {
 		priority := int64(rng.Intn(9999-1000) + 1000)
 
 		txs[i] = testTx{
-			tx:       []byte(fmt.Sprintf("sender-%d-%d=%X=%d", i, peerID, prefix, priority)),
+			tx:       newTx(i, peerID, prefix, priority),
 			priority: priority,
 		}
 		require.NoError(t, txmp.CheckTx(txs[i].tx, nil, txInfo))
+		// assert that none of them get silently evicted
+		require.Equal(t, current + i + 1, txmp.Size())
 	}
 
 	return txs
@@ -162,6 +172,8 @@ func TestTxPool_TxsAvailable(t *testing.T) {
 	for i := 0; i < len(responses); i++ {
 		responses[i] = &abci.ResponseDeliverTx{Code: abci.CodeTypeOK}
 	}
+
+	require.Equal(t, 100, txmp.Size())
 
 	// commit half the transactions and ensure we fire an event
 	txmp.Lock()
@@ -361,51 +373,43 @@ func TestTxPool_ReapMaxBytesMaxGas(t *testing.T) {
 
 func TestTxPool_ReapMaxTxs(t *testing.T) {
 	txmp := setup(t, 0)
-	tTxs := checkTxs(t, txmp, 100, 0)
-	require.Equal(t, len(tTxs), txmp.Size())
+	txs := checkTxs(t, txmp, 100, 0)
+	require.Equal(t, len(txs), txmp.Size())
 	require.Equal(t, int64(5690), txmp.SizeBytes())
 
-	txMap := make(map[types.TxKey]testTx)
-	priorities := make([]int64, len(tTxs))
-	for i, tTx := range tTxs {
-		txMap[tTx.tx.Key()] = tTx
-		priorities[i] = tTx.priority
+	txMap := make(map[types.TxKey]int64)
+	for _, tx := range txs {
+		txMap[tx.tx.Key()] = tx.priority
 	}
 
-	sort.Slice(priorities, func(i, j int) bool {
-		// sort by priority, i.e. decreasing order
-		return priorities[i] > priorities[j]
-	})
-
 	ensurePrioritized := func(reapedTxs types.Txs) {
-		reapedPriorities := make([]int64, len(reapedTxs))
-		for i, rTx := range reapedTxs {
-			reapedPriorities[i] = txMap[rTx.Key()].priority
+		for i := 0; i < len(reapedTxs) - 1; i++ {
+			currPriority := txMap[reapedTxs[i].Key()]
+			nextPriority := txMap[reapedTxs[i + 1].Key()]
+			require.GreaterOrEqual(t, currPriority, nextPriority)
 		}
-
-		require.Equal(t, priorities[:len(reapedPriorities)], reapedPriorities)
 	}
 
 	// reap all transactions
 	reapedTxs := txmp.ReapMaxTxs(-1)
 	ensurePrioritized(reapedTxs)
-	require.Equal(t, len(tTxs), txmp.Size())
+	require.Equal(t, len(txs), txmp.Size())
 	require.Equal(t, int64(5690), txmp.SizeBytes())
-	require.Len(t, reapedTxs, len(tTxs))
+	require.Len(t, reapedTxs, len(txs))
 
 	// reap a single transaction
 	reapedTxs = txmp.ReapMaxTxs(1)
 	ensurePrioritized(reapedTxs)
-	require.Equal(t, len(tTxs), txmp.Size())
+	require.Equal(t, len(txs), txmp.Size())
 	require.Equal(t, int64(5690), txmp.SizeBytes())
 	require.Len(t, reapedTxs, 1)
 
 	// reap half of the transactions
-	reapedTxs = txmp.ReapMaxTxs(len(tTxs) / 2)
+	reapedTxs = txmp.ReapMaxTxs(len(txs) / 2)
 	ensurePrioritized(reapedTxs)
-	require.Equal(t, len(tTxs), txmp.Size())
+	require.Equal(t, len(txs), txmp.Size())
 	require.Equal(t, int64(5690), txmp.SizeBytes())
-	require.Len(t, reapedTxs, len(tTxs)/2)
+	require.Len(t, reapedTxs, len(txs)/2)
 }
 
 func TestTxPool_CheckTxExceedsMaxSize(t *testing.T) {
@@ -649,11 +653,9 @@ func TestConcurrentlyAddingTx(t *testing.T) {
 	}()
 
 	errCount := 0
-	expErr := errors.New("tx already added")
 	for err := range errCh {
-		fmt.Println("received error")
 		if err != nil {
-			require.Equal(t, expErr, err)
+			require.Equal(t, ErrTxInMempool, err)
 			errCount++
 		}
 	}
