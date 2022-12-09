@@ -19,7 +19,7 @@ func TestSeenTxSet(t *testing.T) {
 		peer2  uint16 = 2
 	)
 
-	seenSet := NewSeenTxSet(2)
+	seenSet := NewSeenTxSet()
 	require.Zero(t, seenSet.Pop(tx1Key))
 
 	seenSet.Add(tx1Key, peer1)
@@ -30,12 +30,10 @@ func TestSeenTxSet(t *testing.T) {
 	require.NotNil(t, peers)
 	require.Equal(t, map[uint16]bool{peer1: true, peer2: true}, peers)
 	seenSet.Add(tx2Key, peer1)
-	// make sure there is sufficient time between tx2 and tx3
-	time.Sleep(1 * time.Millisecond)
 	seenSet.Add(tx3Key, peer1)
-	seenSet.Add(tx1Key, peer1)
+	require.Equal(t, 3, seenSet.Len())
+	seenSet.Remove(tx2Key)
 	require.Equal(t, 2, seenSet.Len())
-
 	require.Zero(t, seenSet.Pop(tx2Key))
 	require.Equal(t, peer1, seenSet.Pop(tx1Key))
 }

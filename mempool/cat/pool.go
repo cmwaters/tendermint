@@ -20,10 +20,7 @@ import (
 
 var _ mempool.Mempool = (*TxPool)(nil)
 
-const (
-	evictedTxCacheSize = 100
-	seenByPeerSetSize  = 200
-)
+const evictedTxCacheSize = 200
 
 var (
 	ErrTxInMempool       = errors.New("tx already exists in mempool")
@@ -90,7 +87,7 @@ func NewTxPool(
 		metrics:          mempool.NopMetrics(),
 		rejectedTxCache:  NewLRUTxCache(cfg.CacheSize),
 		evictedTxs:       NewEvictedTxCache(evictedTxCacheSize),
-		seenByPeersSet:   NewSeenTxSet(seenByPeerSetSize),
+		seenByPeersSet:   NewSeenTxSet(),
 		height:           height,
 		preCheck:         func(_ types.Tx) error { return nil },
 		postCheck:        func(_ types.Tx, _ *abci.ResponseCheckTx) error { return nil },
@@ -467,6 +464,8 @@ func (txmp *TxPool) Update(
 		_ = txmp.store.remove(key)
 		_ = txmp.evictedTxs.Pop(key)
 		txmp.seenByPeersSet.Remove(key)
+		// don't allow committed transactions to be committed again
+		txmp.rejectedTxCache.Push(key)
 	}
 
 	txmp.purgeExpiredTxs(blockHeight)
@@ -696,11 +695,13 @@ func (txmp *TxPool) purgeExpiredTxs(blockHeight int64) {
 
 	txmp.store.purgeExpiredTxs(expirationHeight, expirationAge)
 
-	// purge old evicted transactions
-	if txmp.config.TTLDuration > 0 {
-		limit := now.Add(-txmp.config.TTLDuration)
-		txmp.evictedTxs.Prune(limit)
+	// purge old evicted and seen transactions
+	if txmp.config.TTLDuration == 0 {
+		// ensure that evictedTxs and seenByPeersSet are eventually pruned
+		expirationAge = now.Add(-time.Hour)
 	}
+	txmp.evictedTxs.Prune(expirationAge)
+	txmp.seenByPeersSet.Prune(expirationAge)
 }
 
 func (txmp *TxPool) notifyTxsAvailable() {

@@ -181,9 +181,8 @@ func (c *EvictedTxCache) Reset() {
 // seenTxSet records transactions that have been
 // seen by other peers but not yet by us
 type SeenTxSet struct {
-	mtx  tmsync.Mutex
-	size int
-	set  map[types.TxKey]timestampedPeerSet
+	mtx tmsync.Mutex
+	set map[types.TxKey]timestampedPeerSet
 }
 
 type timestampedPeerSet struct {
@@ -191,10 +190,9 @@ type timestampedPeerSet struct {
 	time  time.Time
 }
 
-func NewSeenTxSet(size int) *SeenTxSet {
+func NewSeenTxSet() *SeenTxSet {
 	return &SeenTxSet{
-		size: size,
-		set:  make(map[types.TxKey]timestampedPeerSet),
+		set: make(map[types.TxKey]timestampedPeerSet),
 	}
 }
 
@@ -210,25 +208,8 @@ func (s *SeenTxSet) Add(txKey types.TxKey, peer uint16) {
 			peers: map[uint16]bool{peer: true},
 			time:  time.Now().UTC(),
 		}
-		s.constrainSize()
 	} else {
 		seenSet.peers[peer] = true
-	}
-}
-
-func (s *SeenTxSet) constrainSize() {
-	if len(s.set) > s.size {
-		var (
-			oldestTxKey types.TxKey
-			oldestTime  time.Time
-		)
-		for key, set := range s.set {
-			if oldestTime.IsZero() || set.time.Before(oldestTime) {
-				oldestTxKey = key
-				oldestTime = set.time
-			}
-		}
-		delete(s.set, oldestTxKey)
 	}
 }
 
@@ -251,6 +232,16 @@ func (s *SeenTxSet) Remove(txKey types.TxKey) {
 	s.mtx.Lock()
 	defer s.mtx.Unlock()
 	delete(s.set, txKey)
+}
+
+func (s *SeenTxSet) Prune(limit time.Time) {
+	s.mtx.Lock()
+	defer s.mtx.Unlock()
+	for key, seenSet := range s.set {
+		if seenSet.time.Before(limit) {
+			delete(s.set, key)
+		}
+	}
 }
 
 func (s *SeenTxSet) Get(txKey types.TxKey) map[uint16]bool {
