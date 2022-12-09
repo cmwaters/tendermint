@@ -83,9 +83,6 @@ func NewTxPool(
 	height int64,
 	options ...TxPoolOption,
 ) *TxPool {
-	if height == 0 {
-		panic("cannot create TxPool with height == 0")
-	}
 	txmp := &TxPool{
 		logger:           logger,
 		config:           cfg,

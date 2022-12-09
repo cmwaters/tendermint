@@ -96,14 +96,14 @@ func TestStoreConcurrentAccess(t *testing.T) {
 					tx := types.Tx(fmt.Sprintf("tx%d", i%(numTxs/10)))
 					key := tx.Key()
 					wtx := newWrappedTx(tx, key, 1, 1, 1, "")
-					existingTx := store.get(key) 
+					existingTx := store.get(key)
 					if existingTx != nil && bytes.Equal(existingTx.tx, tx) {
 						// tx has already been added
 						return
 					}
 					if store.reserve(key) {
 						// some fail
-						if i % 3 == 0 {
+						if i%3 == 0 {
 							store.release(key)
 							return
 						}

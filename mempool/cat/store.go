@@ -21,16 +21,18 @@ func newStore() *store {
 	}
 }
 
-func (s *store) set(wtx *wrappedTx) {
+func (s *store) set(wtx *wrappedTx) bool {
 	if wtx == nil {
-		return
+		return false
 	}
 	s.mtx.Lock()
 	defer s.mtx.Unlock()
-	if tx, exists := s.txs[wtx.key]; !exists || tx.height == 0 {
+	if tx, exists := s.txs[wtx.key]; !exists || tx.height == -1 {
 		s.txs[wtx.key] = wtx
 		s.bytes += wtx.size()
+		return true
 	}
+	return false
 }
 
 func (s *store) get(txKey types.TxKey) *wrappedTx {
@@ -66,7 +68,7 @@ func (s *store) reserve(txKey types.TxKey) bool {
 	if _, ok := s.txs[txKey]; ok {
 		return false // already reserved
 	} else {
-		s.txs[txKey] = &wrappedTx{}
+		s.txs[txKey] = &wrappedTx{height: -1}
 	}
 	return true
 }

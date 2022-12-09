@@ -126,7 +126,7 @@ func checkTxs(t *testing.T, txmp *TxPool, numTxs int, peerID uint16) []testTx {
 		}
 		require.NoError(t, txmp.CheckTx(txs[i].tx, nil, txInfo))
 		// assert that none of them get silently evicted
-		require.Equal(t, current + i + 1, txmp.Size())
+		require.Equal(t, current+i+1, txmp.Size())
 	}
 
 	return txs
@@ -383,9 +383,9 @@ func TestTxPool_ReapMaxTxs(t *testing.T) {
 	}
 
 	ensurePrioritized := func(reapedTxs types.Txs) {
-		for i := 0; i < len(reapedTxs) - 1; i++ {
+		for i := 0; i < len(reapedTxs)-1; i++ {
 			currPriority := txMap[reapedTxs[i].Key()]
-			nextPriority := txMap[reapedTxs[i + 1].Key()]
+			nextPriority := txMap[reapedTxs[i+1].Key()]
 			require.GreaterOrEqual(t, currPriority, nextPriority)
 		}
 	}

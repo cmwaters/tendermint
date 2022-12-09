@@ -210,7 +210,7 @@ func TestReactorBroadcastsSeenTxAfterReceivingTx(t *testing.T) {
 		ChannelID: mempool.MempoolChannel,
 	})
 
-	require.Eventually(t, func() bool { 
+	require.Eventually(t, func() bool {
 		peerSet := reactors[0].mempool.seenByPeersSet.Get(key)
 		return len(peerSet) == 2
 	}, 5*time.Second, 100*time.Millisecond)

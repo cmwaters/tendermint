@@ -35,7 +35,7 @@ func TestSeenTxSet(t *testing.T) {
 	seenSet.Add(tx3Key, peer1)
 	seenSet.Add(tx1Key, peer1)
 	require.Equal(t, 2, seenSet.Len())
-	
+
 	require.Zero(t, seenSet.Pop(tx2Key))
 	require.Equal(t, peer1, seenSet.Pop(tx1Key))
 }

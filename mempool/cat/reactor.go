@@ -17,7 +17,7 @@ import (
 
 const (
 	// tx_key + node_id + buffer (for proto encoding)
-	maxStateChannelSize = tmhash.Size + (2*p2p.IDByteLength) + 10
+	maxStateChannelSize = tmhash.Size + (2 * p2p.IDByteLength) + 10
 
 	// default duration to wait before considering a peer non-responsive
 	// and searching for the tx from a new peer
@@ -158,7 +158,7 @@ func (memR *Reactor) AddPeer(peer p2p.Peer) {
 	if !memR.opts.ListenOnly {
 		if memR.mempool.Size() > 0 {
 			memR.sendAllTxKeys(peer)
-		} 
+		}
 	}
 }
 
@@ -369,7 +369,7 @@ func (memR *Reactor) broadcastSeenTx(txKey types.TxKey, fromPeer string) {
 		}
 		p2p.SendEnvelopeShim(peer, p2p.Envelope{ //nolint: staticcheck
 			ChannelID: MempoolStateChannel,
-			Message: msg,
+			Message:   msg,
 		}, memR.Logger)
 	}
 }
