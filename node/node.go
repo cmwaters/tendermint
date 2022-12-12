@@ -375,7 +375,7 @@ func createMempoolAndMempoolReactor(
 ) (mempl.Mempool, p2p.Reactor) {
 	switch config.Mempool.Version {
 	case cfg.MempoolV2:
-		mp := mempoolv2.NewTxMempool(
+		mp := mempoolv2.NewTxPool(
 			logger,
 			config.Mempool,
 			proxyApp.Mempool(),
@@ -385,10 +385,17 @@ func createMempoolAndMempoolReactor(
 			mempoolv2.WithPostCheck(sm.TxPostCheck(state)),
 		)
 
-		reactor := mempoolv2.NewReactor(
-			config.Mempool,
+		reactor, err := mempoolv2.NewReactor(
 			mp,
+			&mempoolv2.ReactorOptions{
+				ListenOnly: !config.Mempool.Broadcast,
+				MaxTxSize:  config.Mempool.MaxTxBytes,
+			},
 		)
+		if err != nil {
+			// TODO: find a more polite way of handling this error
+			panic(err)
+		}
 		if config.Consensus.WaitForTxs() {
 			mp.EnableTxsAvailable()
 		}
